@@ -1,8 +1,21 @@
-resh is an epoll based HTTP/Websocket/Redis multiplexed server library written in pure Golang.
+resh is an epoll based HTTP/Websocket/Redis server library written in pure Golang.
 It acts as an HTTP (Websocket) server and a Redis server (RESP protocol) all in one, multiplex them on the same port.
 
-resh is battle tested - this repo is derived from the internal codebase in [Construct](https://constructfuture.com/),
+resh is battle tested - this repo is derived from the internal codebase in Construct (https://constructfuture.com/),
 capable of handling 10K QPS per core with real online traffic and business (Accessing to MongoDB, caching in Redis, requesting other services).
 
-epoll/kqueue code in internal/ credit to the [evio](https://github.com/tidwall/evio) project.
+epoll/kqueue code in internal/ credit to the evio (https://github.com/tidwall/evio) project.
 Some changes are made inside, such as the lock-free linked list. They will be merged into the upstream soon in the future.
+
+- Usage -
+resh is simple. Refer to /examples for its API.
+
+- Why Redis -
+To build an RPC service, we favor Redis over HTTP as the interface, because it is simple to implement, efficient to transfer,
+and Redis commands are actually way more expressive than HTTP.
+
+RPC frameworks, on the other hand, are clumsy, slow, and will bloat your binary and go.mod with too much unnecessity.
+
+- About SSL -
+Implementing SSL on non-block sockets by Golang requires complete rewrites of crypto/tls, or (if you don't mind), using cgo to call OpenSSL.
+Neither of which will be adapted right now because we can always leverage a load balancer to offload SSL requests.

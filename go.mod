@@ -1,6 +1,6 @@
 module github.com/coyove/resh
 
-go 1.21.5
+go 1.20
 
 require (
 	github.com/coyove/sdss v0.0.0-20231129015646-c2ec58cca6a2
