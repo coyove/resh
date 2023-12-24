@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"experiment/resh/internal"
+	"github.com/coyove/resh/internal"
 
 	reuseport "github.com/kavu/go_reuseport"
 )
