@@ -1,0 +1,8 @@
+.DS_Store
+experiment
+experiment.gz
+*.log
+model.test
+cpuprofile
+test.sh
+./bench
