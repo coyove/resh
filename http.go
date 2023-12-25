@@ -310,13 +310,9 @@ func (w *HTTP) FinishChunked() {
 
 func (w *HTTP) UpgradeWebsocket(hdr http.Header) *Websocket {
 	if !w.wsUpgrade {
-		panic("websocket: incorrect state")
+		return nil
 	}
-	w.c.ws = &Websocket{
-		c:       w.c,
-		OnData:  func(*Websocket, []byte) {},
-		OnClose: func(*Websocket, []byte) {},
-	}
+	w.c.ws = &Websocket{c: w.c}
 	key := w.GetHeader("sec-websocket-key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	h := sha1.Sum([]byte(key))
 	w.c._writeString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ")

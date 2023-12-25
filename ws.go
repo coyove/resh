@@ -9,9 +9,7 @@ type Websocket struct {
 	parsedFrame wsFrame
 	contFrame   []byte
 	closed      bool
-
-	OnData  func(*Websocket, []byte)
-	OnClose func(*Websocket, []byte)
+	closingData []byte
 }
 
 type wsFrame struct {
@@ -94,6 +92,5 @@ func (ws *Websocket) write(typ byte, p string) {
 
 func (ws *Websocket) Close() {
 	ws.closed = true
-	ws.write(8, "")
-	ws.OnClose(ws, nil)
+	ws.write(8, "websocket: close 1000 (normal)")
 }

@@ -66,6 +66,8 @@ type Listener struct {
 
 	OnRedis   func(*Redis) (more bool)
 	OnHTTP    func(*HTTP) (more bool)
+	OnWSData  func(*Websocket, []byte)
+	OnWSClose func(*Websocket, []byte)
 	OnFdCount func(int)
 	OnError   func(err error)
 	Timeout   time.Duration
@@ -256,6 +258,9 @@ func (s *Listener) attachConn(c *Conn) {
 }
 
 func (s *Listener) closeConnWithError(c *Conn, err error) {
+	if c.ws != nil {
+		s.OnWSClose(c.ws, c.ws.closingData)
+	}
 	// _, _, line, _ := runtime.Caller(1)
 	// fmt.Println("close", c.fd, err, line)
 	s.OnFdCount(int(atomic.AddInt32(&s.count, -1)))
@@ -368,11 +373,11 @@ PARSE_NEXT:
 				return
 			}
 			if req.fin {
-				c.ws.OnData(c.ws, c.ws.contFrame)
+				s.OnWSData(c.ws, c.ws.contFrame)
 				c.ws.contFrame = nil
 			}
 		case 8: // close
-			c.ws.OnClose(c.ws, req.data)
+			c.ws.closingData = req.data
 			s.closeConnWithError(c, nil)
 			return
 		case 9: // ping
@@ -380,7 +385,7 @@ PARSE_NEXT:
 		case 10: // pong
 		default:
 			if req.fin {
-				c.ws.OnData(c.ws, req.data)
+				s.OnWSData(c.ws, req.data)
 			} else {
 				c.ws.contFrame = append([]byte{}, req.data...)
 			}

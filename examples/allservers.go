@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,15 +60,7 @@ func main() {
 	ln.OnHTTP = func(req *resh.HTTP) bool {
 		if req.Path == "/ws" {
 			time.AfterFunc(time.Millisecond*10, func() {
-				ws := req.UpgradeWebsocket(nil)
-				ws.OnData = func(ws *resh.Websocket, data []byte) {
-					time.AfterFunc(time.Millisecond*10, func() {
-						ws.WriteBinary(data)
-					})
-				}
-				ws.OnClose = func(ws *resh.Websocket, data []byte) {
-					log.Println("ws close", strconv.Quote(string(data)))
-				}
+				req.UpgradeWebsocket(nil)
 			})
 		} else {
 			time.AfterFunc(time.Millisecond*10, func() {
@@ -85,6 +76,14 @@ func main() {
 			})
 		}
 		return true
+	}
+	ln.OnWSData = func(ws *resh.Websocket, data []byte) {
+		time.AfterFunc(time.Millisecond*10, func() {
+			ws.WriteBinary(data)
+		})
+	}
+	ln.OnWSClose = func(ws *resh.Websocket, data []byte) {
+		log.Println("ws close", string(data))
 	}
 	go ln.Serve()
 
@@ -133,6 +132,7 @@ func main() {
 				}
 			}
 			time.Sleep(time.Second)
+			c.WriteMessage(websocket.CloseMessage, []byte("bye"))
 			c.Close()
 			exit <- true
 
