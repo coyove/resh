@@ -4,8 +4,6 @@ package resh
 
 import (
 	"fmt"
-
-	"github.com/coyove/resh/internal"
 )
 
 type SSLCtx struct{}
@@ -16,7 +14,7 @@ func sslNewCtx(cert, key string) (*SSLCtx, error) {
 
 type SSL struct{}
 
-func (ctx *SSLCtx) accept(poll *internal.Poll, fd int) (*SSL, error) {
+func (ctx *SSLCtx) accept(fd int) (*SSL, error) {
 	panic(0)
 }
 

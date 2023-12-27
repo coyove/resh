@@ -1,17 +1,25 @@
-package resh
+package main
 
 import (
 	"bytes"
 	"crypto/tls"
+	_ "embed"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"os"
 	"sync"
-	"testing"
 	"time"
+
+	"github.com/coyove/resh"
 )
+
+//go:embed cert.pem
+var cert []byte
+
+//go:embed key.pem
+var key []byte
 
 func randData() []byte {
 	x := rand.Intn(65536) + 10240
@@ -20,33 +28,38 @@ func randData() []byte {
 	return b
 }
 
-func TestSSL(t *testing.T) {
-	ln, err := Listen(false, "127.0.0.1:0")
+func main() {
+	ln, err := resh.Listen(false, "127.0.0.1:6000")
 	if err != nil {
 		panic(err)
 	}
-	if err := ln.LoadCertFiles("testdata/cert.pem", "testdata/key.pem"); err != nil {
+	if err := ln.LoadCertPEMs(cert, key); err != nil {
 		panic(err)
 	}
 	ln.OnError = func(err error) {
 		fmt.Println(err)
 	}
-	ln.OnHTTP = func(req *HTTP) bool {
+	ln.OnHTTP = func(req *resh.HTTP) bool {
 		time.AfterFunc(time.Millisecond*10, func() {
 			req.Bytes(200, "text/plain", req.Body()).Flush()
 		})
 		return true
 	}
 	ln.Timeout = time.Second
-	go ln.Serve()
-	time.Sleep(time.Second / 2)
-
 	fmt.Println("serving", ln.LocalAddr())
+
+	go func() {
+		for range time.Tick(time.Second) {
+			fmt.Println(ln.Count())
+		}
+	}()
+	go ln.Serve()
+
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
 	for i := 0; ; i++ {
 		wg := sync.WaitGroup{}
-		for i := 0; i < 500; i++ {
+		for i := 0; i < 20; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -64,7 +77,9 @@ func TestSSL(t *testing.T) {
 				}
 			}()
 		}
-		wg.Done()
+		wg.Wait()
 		fmt.Println(time.Now(), i)
 	}
+	fmt.Println("waiting")
+	select {}
 }

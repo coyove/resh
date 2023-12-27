@@ -13,14 +13,13 @@ resh is simple. Refer to /examples/allservers.go for its API.
 - Should I? -
 resh is reactive, if your logic requires starting a new goroutine for every request, then resh serves no benefits. You have to write all biz code
 in a non-blocking way and process data in callbacks.
-We have inhouse async Redis and HTTP client SDK, it will be open sourced as soon as we clean up all the infrastructure related stuff.
 
 - Why Redis (RESP) -
 To build an RPC service, we favor RESP over HTTP as the interface, because it is simple to implement, efficient to transfer,
 and Redis-like commands are way more expressive than HTTP.
 
 - About SSL -
-OpenSSL and cgo are needed to enable SSL support, currently still in experimental state.
+OpenSSL and cgo are needed to enable SSL support, and it is not as performant as crypto/tls nor nginx due to the high cost of cgo.
 
 - Pipeline -
 resh does not support pipelining deliberately, as it is mainly used as an RPC interface, RTT is negligible compared to an actual Redis server.

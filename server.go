@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"sync/atomic"
@@ -82,11 +83,12 @@ func (s *Listener) Count() int {
 	return int(s.count)
 }
 
-func (s *Listener) LoadCertFiles(cert, key string) error {
+func (s *Listener) LoadCertPEMs(cert, key []byte) error {
 	ctx, err := sslNewCtx(cert, key)
 	if err != nil {
 		return err
 	}
+	runtime.LockOSThread()
 	s.sslCtx = ctx
 	return nil
 }
@@ -226,7 +228,7 @@ func (s *Listener) Serve() {
 
 			c := &Conn{fd: nfd, sa: sa, poll: s.poll}
 			if s.sslCtx != nil {
-				ssl, err := s.sslCtx.accept(s.poll, nfd)
+				ssl, err := s.sslCtx.accept(nfd)
 				if err != nil {
 					s.OnError(err)
 					return nil
@@ -462,5 +464,9 @@ func (ln *Listener) Close() {
 	}
 	if ln.raw != nil {
 		ln.raw.Close()
+	}
+	if ln.sslCtx != nil {
+		ln.sslCtx.close()
+		runtime.UnlockOSThread()
 	}
 }
