@@ -63,6 +63,7 @@ type Listener struct {
 	fdconns map[int]*Conn  // loop connections fd -> conn
 	fdhead  *Conn
 	fdtail  *Conn
+	sslCtx  *SSLCtx
 
 	OnRedis   func(*Redis) (more bool)
 	OnHTTP    func(*HTTP) (more bool)
@@ -81,6 +82,15 @@ func (s *Listener) Count() int {
 	return int(s.count)
 }
 
+func (s *Listener) LoadCertFiles(cert, key string) error {
+	ctx, err := sslNewCtx(cert, key)
+	if err != nil {
+		return err
+	}
+	s.sslCtx = ctx
+	return nil
+}
+
 type Conn struct {
 	Tag any
 
@@ -93,6 +103,7 @@ type Conn struct {
 	srs  serverReadState
 	sa   syscall.Sockaddr
 	poll *internal.Poll
+	ssl  *SSL
 
 	// lock protects the following fields
 	lock atomic.Int64
@@ -214,7 +225,16 @@ func (s *Listener) Serve() {
 			}
 
 			c := &Conn{fd: nfd, sa: sa, poll: s.poll}
+			if s.sslCtx != nil {
+				ssl, err := s.sslCtx.accept(s.poll, nfd)
+				if err != nil {
+					s.OnError(err)
+					return nil
+				}
+				c.ssl = ssl
+			}
 			internal.SetKeepAlive(c.fd, TCPKeepAlive)
+
 			s.poll.AddRead(c.fd)
 			s.fdconns[c.fd] = c
 			s.attachConn(c)
@@ -273,6 +293,9 @@ func (s *Listener) closeConnWithError(c *Conn, err error) {
 	if err != nil {
 		s.OnError(err)
 	}
+	if c.ssl != nil {
+		c.ssl.Close()
+	}
 }
 
 func (s *Listener) writeConn(c *Conn) {
@@ -283,7 +306,13 @@ func (s *Listener) writeConn(c *Conn) {
 		return
 	}
 
-	n, err := syscall.Write(c.fd, c.out)
+	var n int
+	var err error
+	if c.ssl != nil {
+		n, err = c.ssl.Write(c.out)
+	} else {
+		n, err = syscall.Write(c.fd, c.out)
+	}
 	if err != nil {
 		if err == syscall.EAGAIN {
 			if n > 0 {
@@ -317,7 +346,13 @@ func (s *Listener) writeConn(c *Conn) {
 }
 
 func (s *Listener) readConn(c *Conn) {
-	n, err := syscall.Read(c.fd, s.buffer)
+	var n int
+	var err error
+	if c.ssl != nil {
+		n, err = c.ssl.Read(s.buffer)
+	} else {
+		n, err = syscall.Read(c.fd, s.buffer)
+	}
 	if n == 0 {
 		s.closeConnWithError(c, nil)
 		return
