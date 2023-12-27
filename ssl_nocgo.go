@@ -8,13 +8,17 @@ import (
 
 type SSLCtx struct{}
 
-func sslNewCtx(cert, key string) (*SSLCtx, error) {
+func sslNewCtx(cert, key []byte) (*SSLCtx, error) {
 	return nil, fmt.Errorf("SSL support requires cgo and OpenSSL")
 }
 
 type SSL struct{}
 
 func (ctx *SSLCtx) accept(fd int) (*SSL, error) {
+	panic(0)
+}
+
+func (ctx *SSLCtx) close() {
 	panic(0)
 }
 
