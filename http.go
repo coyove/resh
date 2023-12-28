@@ -19,7 +19,7 @@ import (
 var crlf = []byte("\r\n")
 
 type HTTP struct {
-	c         *Conn
+	Conn      *Conn
 	Host      string
 	Path      string
 	qmap      *plru.Map[string, string]
@@ -190,18 +190,18 @@ func (r *HTTP) GetQueryInt64Default(k string, v int64) int64 {
 }
 
 func (r *HTTP) Flush() *HTTP {
-	r.c.Flush()
+	r.Conn.Flush()
 	return r
 }
 
 func (r *HTTP) Redirect(code int, location string) *HTTP {
-	r.c._writeString("HTTP/1.1 ")
-	r.c._writeInt(int64(code), 10)
-	r.c._writeString(" ")
-	r.c._writeString(http.StatusText(code))
-	r.c._writeString("\r\nLocation: ")
-	r.c._writeString(location)
-	r.c._writeString("\r\n\r\n")
+	r.Conn._writeString("HTTP/1.1 ")
+	r.Conn._writeInt(int64(code), 10)
+	r.Conn._writeString(" ")
+	r.Conn._writeString(http.StatusText(code))
+	r.Conn._writeString("\r\nLocation: ")
+	r.Conn._writeString(location)
+	r.Conn._writeString("\r\n\r\n")
 	return r
 }
 
@@ -221,39 +221,39 @@ func (r *HTTP) resp0(code int, contentType string, hdr http.Header) {
 	if code == 0 {
 		code = 200
 	}
-	r.c._writeString("HTTP/1.1 ")
-	r.c._writeInt(int64(code), 10)
-	r.c._writeString(" ")
-	r.c._writeString(http.StatusText(code))
+	r.Conn._writeString("HTTP/1.1 ")
+	r.Conn._writeInt(int64(code), 10)
+	r.Conn._writeString(" ")
+	r.Conn._writeString(http.StatusText(code))
 	if contentType == "" {
 		contentType = "text/plain; charset=utf-8"
 	}
-	r.c._writeString("\r\nContent-Type: ")
-	r.c._writeString(contentType)
+	r.Conn._writeString("\r\nContent-Type: ")
+	r.Conn._writeString(contentType)
 	for k, v := range hdr {
 		switch k {
 		case "Content-Type", "Connection", "Content-Length", "Transfer-Encoding":
 		default:
-			r.c._writeString("\r\n")
-			r.c._writeString(k)
-			r.c._writeString(": ")
-			r.c._writeString(v[0])
+			r.Conn._writeString("\r\n")
+			r.Conn._writeString(k)
+			r.Conn._writeString(": ")
+			r.Conn._writeString(v[0])
 		}
 	}
 }
 
 func (r *HTTP) respFull(code int, contentType string, hdr http.Header, data string) *HTTP {
 	r.resp0(code, contentType, hdr)
-	r.c._writeString("\r\nConnection: Keep-Alive\r\nContent-Length: ")
-	r.c._writeInt(int64(len(data)), 10)
-	r.c._writeString("\r\n\r\n")
-	r.c._writeString(data)
+	r.Conn._writeString("\r\nConnection: Keep-Alive\r\nContent-Length: ")
+	r.Conn._writeInt(int64(len(data)), 10)
+	r.Conn._writeString("\r\n\r\n")
+	r.Conn._writeString(data)
 	return r
 }
 
 func (r *HTTP) StartChunked(code int, contentType string, hdr http.Header) {
 	r.resp0(code, contentType, hdr)
-	r.c._writeString("\r\nConnection: Keep-Alive\r\nTransfer-Encoding: chunked\r\n\r\n")
+	r.Conn._writeString("\r\nConnection: Keep-Alive\r\nTransfer-Encoding: chunked\r\n\r\n")
 	r.chunked = true
 }
 
@@ -286,11 +286,11 @@ func (w *HTTP) Write(p []byte) (int, error) {
 }
 
 func (w *HTTP) writeChunked(p []byte) {
-	w.c._writeInt(int64(len(p)), 16)
-	w.c._writeString("\r\n")
-	w.c.Write(p)
-	w.c._writeString("\r\n")
-	if len(w.c.out) >= 16*1024 {
+	w.Conn._writeInt(int64(len(p)), 16)
+	w.Conn._writeString("\r\n")
+	w.Conn.Write(p)
+	w.Conn._writeString("\r\n")
+	if len(w.Conn.out) >= 16*1024 {
 		w.Flush()
 	}
 }
@@ -303,7 +303,7 @@ func (w *HTTP) FinishChunked() {
 		w.writeChunked(w.chkbuf)
 		w.chkbuf = w.chkbuf[:0]
 	}
-	w.c._writeString("0\r\n\r\n")
+	w.Conn._writeString("0\r\n\r\n")
 	w.chunked = false
 	w.Flush()
 }
@@ -312,25 +312,25 @@ func (w *HTTP) UpgradeWebsocket(hdr http.Header) *Websocket {
 	if !w.wsUpgrade {
 		return nil
 	}
-	w.c.ws = &Websocket{c: w.c}
+	w.Conn.ws = &Websocket{c: w.Conn}
 	key := w.GetHeader("sec-websocket-key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	h := sha1.Sum([]byte(key))
-	w.c._writeString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ")
-	w.c._writeString(base64.StdEncoding.EncodeToString(h[:]))
-	w.c._writeString("\r\n")
+	w.Conn._writeString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ")
+	w.Conn._writeString(base64.StdEncoding.EncodeToString(h[:]))
+	w.Conn._writeString("\r\n")
 	for k, v := range hdr {
 		switch k {
 		case "Upgrade", "Connection", "Sec-WebSocket-Accept":
 		default:
-			w.c._writeString(k)
-			w.c._writeString(": ")
-			w.c._writeString(v[0])
-			w.c._writeString("\r\n")
+			w.Conn._writeString(k)
+			w.Conn._writeString(": ")
+			w.Conn._writeString(v[0])
+			w.Conn._writeString("\r\n")
 		}
 	}
-	w.c._writeString("\r\n")
-	w.c.Flush()
-	return w.c.ws
+	w.Conn._writeString("\r\n")
+	w.Conn.Flush()
+	return w.Conn.ws
 }
 
 func RunPprof(sh *HTTP) {
@@ -374,5 +374,5 @@ func (sh *HTTP) RunGoHandler(h http.HandlerFunc) {
 }
 
 func (r *HTTP) Release() {
-	r.c.ReuseInputBuffer(r.data)
+	r.Conn.ReuseInputBuffer(r.data)
 }

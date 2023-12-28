@@ -1,20 +1,15 @@
 package resh
 
 import (
-	"net"
 	"strconv"
 )
 
 type Redis struct {
-	c     *Conn
+	Conn  *Conn
 	data  []byte
 	read  uint32
 	nargs uint16
 	ai    [][2]uint32 // [[start, length] ...]
-}
-
-func (r *Redis) RemoteAddr() net.Addr {
-	return r.c.RemoteAddr()
 }
 
 func (r *Redis) Len() int {
@@ -46,25 +41,25 @@ func (r *Redis) Int64Default(i int, v int64) int64 {
 }
 
 func (r *Redis) WriteRawBytes(p []byte) *Redis {
-	r.c.Write(p)
+	r.Conn.Write(p)
 	return r
 }
 
 func (r *Redis) WriteError(err string) *Redis {
-	r.c.spinLock()
-	r.c.out = append(r.c.out, '-')
-	r.c.out = append(r.c.out, err...)
-	r.c.out = append(r.c.out, "\r\n"...)
-	r.c.spinUnlock()
+	r.Conn.spinLock()
+	r.Conn.out = append(r.Conn.out, '-')
+	r.Conn.out = append(r.Conn.out, err...)
+	r.Conn.out = append(r.Conn.out, "\r\n"...)
+	r.Conn.spinUnlock()
 	return r
 }
 
 func (r *Redis) WriteSimpleString(p string) *Redis {
-	r.c.spinLock()
-	r.c.out = append(r.c.out, '+')
-	r.c.out = append(r.c.out, p...)
-	r.c.out = append(r.c.out, "\r\n"...)
-	r.c.spinUnlock()
+	r.Conn.spinLock()
+	r.Conn.out = append(r.Conn.out, '+')
+	r.Conn.out = append(r.Conn.out, p...)
+	r.Conn.out = append(r.Conn.out, "\r\n"...)
+	r.Conn.spinUnlock()
 	return r
 }
 
@@ -73,30 +68,30 @@ func (r *Redis) WriteBulk(p []byte) *Redis {
 }
 
 func (r *Redis) WriteBulkString(p string) *Redis {
-	r.c.spinLock()
-	r.c.out = append(r.c.out, '$')
-	r.c.out = strconv.AppendInt(r.c.out, int64(len(p)), 10)
-	r.c.out = append(r.c.out, "\r\n"...)
-	r.c.out = append(r.c.out, p...)
-	r.c.out = append(r.c.out, "\r\n"...)
-	r.c.spinUnlock()
+	r.Conn.spinLock()
+	r.Conn.out = append(r.Conn.out, '$')
+	r.Conn.out = strconv.AppendInt(r.Conn.out, int64(len(p)), 10)
+	r.Conn.out = append(r.Conn.out, "\r\n"...)
+	r.Conn.out = append(r.Conn.out, p...)
+	r.Conn.out = append(r.Conn.out, "\r\n"...)
+	r.Conn.spinUnlock()
 	return r
 }
 
 func (r *Redis) WriteArrayBegin(n int) *Redis {
-	r.c.spinLock()
-	r.c.out = append(r.c.out, '*')
-	r.c.out = strconv.AppendInt(r.c.out, int64(n), 10)
-	r.c.out = append(r.c.out, "\r\n"...)
-	r.c.spinUnlock()
+	r.Conn.spinLock()
+	r.Conn.out = append(r.Conn.out, '*')
+	r.Conn.out = strconv.AppendInt(r.Conn.out, int64(n), 10)
+	r.Conn.out = append(r.Conn.out, "\r\n"...)
+	r.Conn.spinUnlock()
 	return r
 }
 
 func (r *Redis) Flush() *Redis {
-	r.c.Flush()
+	r.Conn.Flush()
 	return r
 }
 
 func (r *Redis) Release() {
-	r.c.ReuseInputBuffer(r.data)
+	r.Conn.ReuseInputBuffer(r.data)
 }

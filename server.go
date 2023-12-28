@@ -433,7 +433,7 @@ PARSE_NEXT:
 		}
 	} else if c.srs.http != nil {
 		req := c.srs.http
-		req.c = c
+		req.Conn = c
 		c.truncateInputBuffer(int(req.bodyLen) + int(req.hdrLen))
 		if !s.OnHTTP(req) {
 			s.closeConnWithError(c, nil)
@@ -441,7 +441,7 @@ PARSE_NEXT:
 		}
 	} else {
 		req := c.srs.redis
-		req.c = c
+		req.Conn = c
 		c.truncateInputBuffer(int(req.read))
 		if !s.OnRedis(req) {
 			s.closeConnWithError(c, nil)
