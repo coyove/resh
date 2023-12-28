@@ -1,8 +1,7 @@
 resh is a single-threaded (goroutine) epoll based HTTP/Websocket/Redis server library written in pure Golang.
 It acts as an HTTP (Websocket) server and a Redis server (RESP protocol) all in one, multiplex them on the same port.
 
-resh is battle tested - this repo is derived from the internal codebase in Construct (https://constructfuture.com/),
-capable of handling 10K QPS per core with real online traffic and business (Accessing to MongoDB, caching in Redis, requesting other services).
+resh is battle tested - this repo is derived from the internal codebase in Construct (https://constructfuture.com/), capable of handling 10K QPS per core with real online traffic and business (Accessing to MongoDB, caching in Redis, requesting other services).
 
 epoll/kqueue code in internal/ credit to the evio (https://github.com/tidwall/evio) project.
 Some changes are made, such as the lock-free linked list. They will be merged into the upstream soon in the future.
@@ -11,15 +10,15 @@ Some changes are made, such as the lock-free linked list. They will be merged in
 resh is simple. Refer to /examples/allservers.go for its API.
 
 - Should I? -
-resh is reactive, if your logic requires starting a new goroutine for every request, then resh serves no benefits. You have to write all biz code
-in a non-blocking way and process data in callbacks.
+resh is reactive, if your logic requires starting a new goroutine for every request, then resh serves no benefits. You have to write all biz code in a non-blocking way and process data in callbacks.
 
 - Why Redis (RESP) -
-To build an RPC service, we favor RESP over HTTP as the interface, because it is simple to implement, efficient to transfer,
-and Redis-like commands are way more expressive than HTTP.
+To build an RPC service, we favor RESP over HTTP as the interface, because it is simple to implement, efficient to transfer and Redis-like commands are way more expressive than HTTP.
+
+- Pipeline -
+resh does not support pipelining deliberately because it is mainly used as an RPC interface, thus TCP connection overhead is negligible.
 
 - About SSL -
 OpenSSL and cgo are needed to enable SSL support, and it is not as performant as crypto/tls nor nginx due to the high cost of cgo.
-
-- Pipeline -
-resh does not support pipelining deliberately, as it is mainly used as an RPC interface, RTT is negligible compared to an actual Redis server.
+Use musl to produce a static build, OpenSSL needed to be configured as:
+    CC="musl-gcc -static" ./config --prefix=$HOME/musl no-shared no-async no-engine -DOPENSSL_NO_SECURE_MEMORY
