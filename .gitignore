@@ -6,3 +6,5 @@ model.test
 cpuprofile
 test.sh
 ./bench
+ssl
+openssl-amd64

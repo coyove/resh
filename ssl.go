@@ -3,7 +3,9 @@
 package resh
 
 /*
-#cgo LDFLAGS: -l:libssl.a -l:libcrypto.a -ldl -static-libgcc
+#cgo !arm64crossamd64 LDFLAGS: -lssl -lcrypto -ldl -static-libgcc
+#cgo arm64crossamd64 CFLAGS: -I${SRCDIR}/openssl-amd64/include
+#cgo arm64crossamd64 LDFLAGS: -lssl -lcrypto -ldl -static-libgcc -L${SRCDIR}/openssl-amd64/lib
 #include<string.h>
 #include<openssl/bio.h>
 #include<openssl/ssl.h>
