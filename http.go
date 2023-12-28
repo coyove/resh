@@ -312,7 +312,7 @@ func (w *HTTP) UpgradeWebsocket(hdr http.Header) *Websocket {
 	if !w.wsUpgrade {
 		return nil
 	}
-	w.Conn.ws = &Websocket{c: w.Conn}
+	w.Conn.ws = &Websocket{Conn: w.Conn}
 	key := w.GetHeader("sec-websocket-key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	h := sha1.Sum([]byte(key))
 	w.Conn._writeString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ")

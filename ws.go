@@ -5,7 +5,7 @@ import (
 )
 
 type Websocket struct {
-	c           *Conn
+	Conn        *Conn
 	parsedFrame wsFrame
 	contFrame   []byte
 	closed      bool
@@ -86,8 +86,8 @@ func (ws *Websocket) write(typ byte, p string) {
 		tmp = binary.BigEndian.AppendUint64(append(tmp, 127), uint64(len(p)))
 	}
 	tmp = append(tmp, p...)
-	ws.c.Write(tmp)
-	ws.c.Flush()
+	ws.Conn.Write(tmp)
+	ws.Conn.Flush()
 }
 
 func (ws *Websocket) Close() {
