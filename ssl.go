@@ -3,7 +3,7 @@
 package resh
 
 /*
-#cgo LDFLAGS: -lcrypto -lssl
+#cgo LDFLAGS: -l:libssl.a -l:libcrypto.a -l:libz.a -ldl -static-libgcc
 #include<string.h>
 #include<openssl/bio.h>
 #include<openssl/ssl.h>

@@ -75,7 +75,7 @@ type Listener struct {
 	Timeout   time.Duration
 }
 
-func (s *Listener) LocalAddr() net.Addr {
+func (s *Listener) Addr() net.Addr {
 	return s.raw.Addr()
 }
 
