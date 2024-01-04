@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Println("listen on", ln.LocalAddr())
+	log.Println("listen on", ln.Addr())
 
 	var succRedis, succHTTP, succWS int64
 	go func() {
@@ -45,7 +45,7 @@ func main() {
 	}()
 
 	resh.RequestMaxBytes = 10 * 1024 * 1024
-	ln.OnError = func(err error) {
+	ln.OnError = func(err resh.Error) {
 		log.Println("error:", err)
 	}
 	ln.OnRedis = func(c *resh.Redis) bool {
@@ -88,14 +88,14 @@ func main() {
 	go ln.Serve()
 
 	time.Sleep(time.Second)
-	client := redis.NewClient(&redis.Options{Addr: ln.LocalAddr().String(), PoolSize: 1024})
+	client := redis.NewClient(&redis.Options{Addr: ln.Addr().String(), PoolSize: 1024})
 
 	for {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, _, err := websocket.DefaultDialer.Dial("ws://"+ln.LocalAddr().String()+"/ws", nil)
+			c, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
 			if err != nil {
 				log.Fatalln("ws dial:", err)
 			}

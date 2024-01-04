@@ -45,7 +45,7 @@ func main() {
 		if err := ln.LoadCertPEMs(cert, key); err != nil {
 			panic(err)
 		}
-		ln.OnError = func(err error) {
+		ln.OnError = func(err resh.Error) {
 			fmt.Println(err)
 		}
 		ln.OnHTTP = func(req *resh.HTTP) bool {

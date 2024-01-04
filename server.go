@@ -71,7 +71,7 @@ type Listener struct {
 	OnWSData  func(*Websocket, []byte)
 	OnWSClose func(*Websocket, []byte)
 	OnFdCount func(int)
-	OnError   func(err error)
+	OnError   func(Error)
 	Timeout   time.Duration
 }
 
@@ -199,11 +199,11 @@ func (s *Listener) Serve() {
 
 	defer func() {
 		if r := recover(); r != nil {
-			s.OnError(fmt.Errorf("fatal error %v: %s", r, debug.Stack()))
+			s.OnError(Error{Type: "panic", Cause: fmt.Errorf("fatal error %v: %s", r, debug.Stack())})
 		}
 
 		for _, c := range s.fdconns {
-			s.closeConnWithError(c, nil)
+			s.closeConnWithError(c, "", nil)
 		}
 		s.poll.Close()
 		//println("-- server stopped")
@@ -218,11 +218,11 @@ func (s *Listener) Serve() {
 				if err == syscall.EAGAIN {
 					return nil
 				}
-				s.OnError(err)
+				s.OnError(Error{Type: "accept", Cause: err})
 				return nil
 			}
 			if err := syscall.SetNonblock(nfd, true); err != nil {
-				s.OnError(err)
+				s.OnError(Error{Type: "setnonblock", Cause: err})
 				return nil
 			}
 
@@ -230,7 +230,7 @@ func (s *Listener) Serve() {
 			if s.sslCtx != nil {
 				ssl, err := s.sslCtx.accept(nfd)
 				if err != nil {
-					s.OnError(err)
+					s.OnError(Error{Type: "ssl", Cause: err})
 					return nil
 				}
 				c.ssl = ssl
@@ -244,7 +244,7 @@ func (s *Listener) Serve() {
 		} else {
 			c, ok := s.fdconns[fd]
 			if !ok {
-				s.OnError(fmt.Errorf("warning: fd %d not found", fd))
+				s.OnError(Error{Type: "warning", Cause: fmt.Errorf("warning: fd %d not found", fd)})
 				return nil
 			}
 
@@ -259,7 +259,7 @@ func (s *Listener) Serve() {
 		if s.Timeout > 0 {
 			for conn, now := s.fdtail.prev, time.Now().UnixNano(); conn != nil && conn != s.fdhead; conn = conn.prev {
 				if conn.ts < now-int64(s.Timeout) {
-					s.closeConnWithError(conn, TimeoutError(fmt.Sprintf("connection to %v timed out (fd=%d)", conn.RemoteAddr(), conn.fd)))
+					s.closeConnWithError(conn, "timeout", fmt.Errorf("connection to %v timed out (fd=%d)", conn.RemoteAddr(), conn.fd))
 				} else {
 					break
 				}
@@ -279,7 +279,7 @@ func (s *Listener) attachConn(c *Conn) {
 	c.ts = time.Now().UnixNano()
 }
 
-func (s *Listener) closeConnWithError(c *Conn, err error) {
+func (s *Listener) closeConnWithError(c *Conn, typ string, err error) {
 	if c.ws != nil {
 		s.OnWSClose(c.ws, c.ws.closingData)
 	}
@@ -290,10 +290,10 @@ func (s *Listener) closeConnWithError(c *Conn, err error) {
 	delete(s.fdconns, c.fd)
 
 	if err := syscall.Close(c.fd); err != nil {
-		s.OnError(err)
+		s.OnError(Error{Type: "close", Cause: err})
 	}
 	if err != nil {
-		s.OnError(err)
+		s.OnError(Error{Type: typ, Cause: err})
 	}
 	if c.ssl != nil {
 		c.ssl.Close()
@@ -325,7 +325,7 @@ func (s *Listener) writeConn(c *Conn) {
 			return
 		}
 		c.spinUnlock()
-		s.closeConnWithError(c, err)
+		s.closeConnWithError(c, "write", err)
 		return
 	}
 
@@ -334,7 +334,7 @@ func (s *Listener) writeConn(c *Conn) {
 		c.spinUnlock()
 
 		if c.ws != nil && c.ws.closed {
-			s.closeConnWithError(c, nil)
+			s.closeConnWithError(c, "", nil)
 		} else {
 			s.poll.ModRead(c.fd)
 		}
@@ -356,7 +356,7 @@ func (s *Listener) readConn(c *Conn) {
 		n, err = syscall.Read(c.fd, s.buffer)
 	}
 	if n == 0 {
-		s.closeConnWithError(c, nil)
+		s.closeConnWithError(c, "", nil)
 		return
 	}
 	if err != nil {
@@ -364,7 +364,7 @@ func (s *Listener) readConn(c *Conn) {
 			s.poll.ModRead(c.fd)
 			return
 		}
-		s.closeConnWithError(c, err)
+		s.closeConnWithError(c, "read", err)
 		return
 	}
 
@@ -372,7 +372,7 @@ PARSE_NEXT:
 	c.spinLock()
 	c.in = append(c.in, s.buffer[:n]...)
 	if len(c.in) > RequestMaxBytes {
-		s.closeConnWithError(c, fmt.Errorf("request too large: %db", len(c.in)))
+		s.closeConnWithError(c, "oversize", fmt.Errorf("request too large: %db", len(c.in)))
 		return
 	}
 	if c.ws != nil {
@@ -391,7 +391,7 @@ PARSE_NEXT:
 	}
 
 	if err != nil {
-		s.closeConnWithError(c, err)
+		s.closeConnWithError(c, "read", err)
 		return
 	}
 
@@ -401,12 +401,12 @@ PARSE_NEXT:
 		switch req.opcode {
 		case 0: // continuation
 			if c.ws.contFrame == nil {
-				s.closeConnWithError(c, fmt.Errorf("unexpected continuation frame"))
+				s.closeConnWithError(c, "websocket", fmt.Errorf("unexpected continuation frame"))
 				return
 			}
 			c.ws.contFrame = append(c.ws.contFrame, req.data...)
 			if len(c.ws.contFrame) > RequestMaxBytes {
-				s.closeConnWithError(c, fmt.Errorf("continuation frame too large"))
+				s.closeConnWithError(c, "websocket", fmt.Errorf("continuation frame too large"))
 				return
 			}
 			if req.fin {
@@ -415,7 +415,7 @@ PARSE_NEXT:
 			}
 		case 8: // close
 			c.ws.closingData = req.data
-			s.closeConnWithError(c, nil)
+			s.closeConnWithError(c, "", nil)
 			return
 		case 9: // ping
 			c.ws.write(10, btos(req.data))
@@ -436,7 +436,7 @@ PARSE_NEXT:
 		req.Conn = c
 		c.truncateInputBuffer(int(req.bodyLen) + int(req.hdrLen))
 		if !s.OnHTTP(req) {
-			s.closeConnWithError(c, nil)
+			s.closeConnWithError(c, "", nil)
 			return
 		}
 	} else {
@@ -444,7 +444,7 @@ PARSE_NEXT:
 		req.Conn = c
 		c.truncateInputBuffer(int(req.read))
 		if !s.OnRedis(req) {
-			s.closeConnWithError(c, nil)
+			s.closeConnWithError(c, "", nil)
 			return
 		}
 	}

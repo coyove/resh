@@ -9,9 +9,14 @@ import (
 	"unsafe"
 )
 
-type TimeoutError string
+type Error struct {
+	Cause error
+	Type  string
+}
 
-func (e TimeoutError) Error() string { return string(e) }
+func (e Error) Error() string {
+	return e.Type + ": " + e.Cause.Error()
+}
 
 var errWaitMore = fmt.Errorf("wait more")
 
