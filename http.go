@@ -98,7 +98,10 @@ func (r *HTTP) parse() error {
 			case "host":
 				r.Host = btos(value)
 			case "content-length":
-				cl, _ := strconv.Atoi(btos(value))
+				cl, err := strconv.Atoi(btos(value))
+				if cl > RequestMaxBytes || cl < 0 || err != nil {
+					return fmt.Errorf("invalid Content-Length %q", value)
+				}
 				r.bodyLen = uint32(cl)
 			}
 		}
