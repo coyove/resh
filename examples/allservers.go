@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/hex"
 	"io"
 	"log"
@@ -15,7 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/coyove/resh"
-	"github.com/go-redis/redis/v8"
+	"github.com/coyove/resh/redis"
 	"github.com/gorilla/websocket"
 )
 
@@ -36,25 +35,45 @@ func main() {
 	}
 	log.Println("listen on", ln.Addr())
 
+	client, err := redis.NewClient("pwd", ln.Addr().String())
+	if err != nil {
+		panic(err)
+	}
+	client.OnError = func(err resh.Error) {
+		log.Println("error:", err)
+	}
+	client.Timeout = time.Second
+
 	var succRedis, succHTTP, succWS int64
 	go func() {
 		for range time.Tick(time.Second) {
-			log.Printf("active=%d, redis echo=%d, http echo=%d, ws echo=%d\n",
-				ln.Count(), succRedis, succHTTP, succWS)
+			log.Printf("active=%d, redisclients=%d, redis echo=%d, http echo=%d, ws echo=%d\n",
+				client.Count(), ln.Count(), succRedis, succHTTP, succWS)
 		}
 	}()
 
 	resh.RequestMaxBytes = 10 * 1024 * 1024
-	ln.OnError = func(err resh.Error) {
-		log.Println("error:", err)
-	}
+	ln.OnError = client.OnError
 	ln.OnRedis = func(c *resh.Redis) bool {
-		time.AfterFunc(time.Millisecond*10, func() {
-			off, _ := c.Int64(1)
-			c.WriteBulk(c.Get(1 + int(off) + 1))
-			c.Flush()
-			c.Release()
-		})
+		if c.Conn.Tag == nil {
+			if c.Str(0) != "AUTH" {
+				c.WriteError("No AUTH")
+				return true
+			}
+			if c.Str(1) != "pwd" {
+				c.WriteError("AUTH failed")
+				return true
+			}
+			c.Conn.Tag = true
+			c.WriteSimpleString("OK")
+		} else {
+			time.AfterFunc(time.Millisecond*10, func() {
+				off, _ := c.Int64(1)
+				c.WriteBulk(c.Get(1 + int(off) + 1))
+				c.Flush()
+				c.Release()
+			})
+		}
 		return true
 	}
 	ln.OnHTTP = func(req *resh.HTTP) bool {
@@ -88,7 +107,6 @@ func main() {
 	go ln.Serve()
 
 	time.Sleep(time.Second)
-	client := redis.NewClient(&redis.Options{Addr: ln.Addr().String(), PoolSize: 1024})
 
 	for {
 		var wg sync.WaitGroup
@@ -144,7 +162,7 @@ func main() {
 			succWS += int64(len(m))
 		}()
 		for i := 0; i < 1000; i++ {
-			wg.Add(2)
+			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				x := 1 + rand.Intn(10)
@@ -156,13 +174,13 @@ func main() {
 
 					if c := rand.Intn(3); c == 0 {
 						xs := url.QueryEscape(x)
-						resp, err = http.Get("http://" + client.Options().Addr + "?a=" + xs)
+						resp, err = http.Get("http://" + ln.Addr().String() + "?a=" + xs)
 					} else if c == 1 {
-						req, _ := http.NewRequest("GET", "http://"+client.Options().Addr, nil)
+						req, _ := http.NewRequest("GET", "http://"+ln.Addr().String(), nil)
 						req.Header.Add("X-Resh", hex.EncodeToString([]byte(x)))
 						resp, err = http.DefaultClient.Do(req)
 					} else {
-						resp, err = http.Post("http://"+client.Options().Addr, "text/plain", strings.NewReader(x))
+						resp, err = http.Post("http://"+ln.Addr().String(), "text/plain", strings.NewReader(x))
 					}
 
 					if err != nil {
@@ -178,29 +196,29 @@ func main() {
 					atomic.AddInt64(&succHTTP, 1)
 				}
 			}()
-			go func() {
-				defer wg.Done()
-				x := 1 + rand.Intn(10)
-				for i := 0; i < x; i++ {
-					x := randData()
-					off := rand.Intn(4) + 4
-					args := []any{"test", off}
-					for i := 0; i < off; i++ {
-						args = append(args, randData())
-					}
-					args = append(args, x)
-
-					y, err := client.Do(context.TODO(), args...).Result()
-					if err != nil {
-						log.Fatalln("failed to send redis request:", err)
-					}
-					if x != y.(string) {
-						log.Fatalln("redis mismatch")
-					}
-
-					atomic.AddInt64(&succRedis, 1)
+			x := 1 + rand.Intn(10)
+			for i := 0; i < x; i++ {
+				x := randData()
+				off := rand.Intn(4) + 4
+				args := []any{"test", off}
+				for i := 0; i < off; i++ {
+					args = append(args, randData())
 				}
-			}()
+				args = append(args, x)
+
+				wg.Add(1)
+				client.Exec(args, func(d *redis.Reader, err error) {
+					if err != nil {
+						log.Fatal(err)
+					}
+					y := d.Str()
+					if x != y {
+						log.Fatalln("redis mismatch", len(x), len(y))
+					}
+					atomic.AddInt64(&succRedis, 1)
+					wg.Done()
+				})
+			}
 		}
 		wg.Wait()
 	}
