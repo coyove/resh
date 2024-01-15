@@ -30,12 +30,13 @@ char* X_get_last_error() {
     return copy;
 }
 
-X_SSL_CTX* X_init(const char* cert, size_t cert_len, const char* key, size_t key_len) {
+X_SSL_CTX* X_init(const int is_client, const char* cert, size_t cert_len, const char* key, size_t key_len) {
     SSL_load_error_strings();
     SSL_library_init();
 
-    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    SSL_CTX* ctx = SSL_CTX_new(is_client == 1 ? TLS_client_method() : TLS_server_method());
     if (ctx == 0) return NULL;
+    if (is_client == 1) return ctx;
 
     BIO* certBio = BIO_new(BIO_s_mem());
     BIO_write(certBio, cert, cert_len);
@@ -157,9 +158,17 @@ func sslNewCtx(cert, key []byte) (*SSLCtx, error) {
 	ckey := C.CString(*(*string)(unsafe.Pointer(&key)))
 	defer C.free(unsafe.Pointer(ckey))
 
-	res := C.X_init(ccert, C.ulong(len(cert)), ckey, C.ulong(len(key)))
+	res := C.X_init(0, ccert, C.ulong(len(cert)), ckey, C.ulong(len(key)))
 	if res == nil {
-		return nil, fmt.Errorf("failed to init openssl: %v", sslGetError())
+		return nil, fmt.Errorf("failed to init server openssl: %v", sslGetError())
+	}
+	return &SSLCtx{ctx: res}, nil
+}
+
+func sslNewClientCtx() (*SSLCtx, error) {
+	res := C.X_init(1, nil, 0, nil, 0)
+	if res == nil {
+		return nil, fmt.Errorf("failed to init client openssl: %v", sslGetError())
 	}
 	return &SSLCtx{ctx: res}, nil
 }

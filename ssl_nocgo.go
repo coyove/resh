@@ -12,6 +12,10 @@ func sslNewCtx(cert, key []byte) (*SSLCtx, error) {
 	return nil, fmt.Errorf("SSL support requires cgo and OpenSSL")
 }
 
+func sslNewClientCtx() (*SSLCtx, error) {
+	return nil, nil
+}
+
 type SSL struct{}
 
 func (ctx *SSLCtx) accept(fd int) (*SSL, error) {
