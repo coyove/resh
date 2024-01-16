@@ -22,6 +22,12 @@ func readElement(in []byte) (int, error) {
 			if err != nil {
 				return 0, err
 			}
+			if sz == -1 {
+				return idx + 2, nil
+			}
+			if sz < 0 {
+				return 0, fmt.Errorf("invalid bulk string length %d", sz)
+			}
 			if len(in) >= idx+2+int(sz)+2 {
 				buf := in[:idx+2+int(sz)+2]
 				if buf[len(buf)-2] == '\r' && buf[len(buf)-1] == '\n' {
@@ -68,7 +74,7 @@ func (r *Reader) Next() any {
 	typ, i, s, d := r.readNext()
 	switch typ {
 	case 's':
-		return s
+		return btos(s)
 	case 'i':
 		return i
 	case 'e':
@@ -117,6 +123,10 @@ func (r *Reader) readNext() (byte, int64, []byte, *Reader) {
 	case '$':
 		idx := bytes.Index(r.buf, crlf)
 		sz, _ := strconv.Atoi(btos(r.buf[1:idx]))
+		if sz == -1 {
+			r.buf = r.buf[idx+2:]
+			return 's', 0, nil, nil
+		}
 		data := r.buf[idx+2 : idx+2+sz]
 		r.buf = r.buf[idx+2+sz+2:]
 		return 's', 0, data, nil
@@ -155,7 +165,11 @@ func (r *Reader) String() string {
 		if i > 0 {
 			buf.WriteString(",")
 		}
-		fmt.Fprint(buf, a)
+		if s, ok := a.(string); ok {
+			buf.WriteString(strconv.Quote(s))
+		} else {
+			fmt.Fprint(buf, a)
+		}
 	}
 	buf.WriteString(")")
 	return buf.String()

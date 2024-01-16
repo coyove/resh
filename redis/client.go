@@ -17,6 +17,34 @@ import (
 	"github.com/coyove/resh/internal"
 )
 
+var ResponseMaxBytes = 1 * 1024 * 1024
+
+type Client struct {
+	poll   *internal.Poll
+	auth   string
+	addr   syscall.Sockaddr
+	buffer []byte
+	sslCtx *resh.SSLCtx
+
+	// fdlock protects the following fields
+	fdlock  atomic.Int64
+	fdconns map[int]*Conn
+	fdIdle  struct {
+		head, tail *Conn
+		count      int
+	}
+	fdActive struct {
+		head, tail *Conn
+		count      int
+	}
+
+	OnFdCount      func()
+	OnError        func(resh.Error)
+	Timeout        time.Duration
+	IdlePoolSize   int
+	ActivePoolSize int
+}
+
 func NewClient(auth string, addr string) (*Client, error) {
 	taddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -33,20 +61,20 @@ func NewClient(auth string, addr string) (*Client, error) {
 		copy(d.addr.(*syscall.SockaddrInet6).Addr[:], taddr.IP)
 	}
 
-	d.fdfree.head = &Conn{}
-	d.fdfree.tail = &Conn{}
-	d.fdfree.head.next = d.fdfree.tail
-	d.fdfree.tail.prev = d.fdfree.head
-	d.fdactive.head = &Conn{}
-	d.fdactive.tail = &Conn{}
-	d.fdactive.head.next = d.fdactive.tail
-	d.fdactive.tail.prev = d.fdactive.head
+	d.fdIdle.head = &Conn{}
+	d.fdIdle.tail = &Conn{}
+	d.fdIdle.head.next = d.fdIdle.tail
+	d.fdIdle.tail.prev = d.fdIdle.head
+	d.fdActive.head = &Conn{}
+	d.fdActive.tail = &Conn{}
+	d.fdActive.head.next = d.fdActive.tail
+	d.fdActive.tail.prev = d.fdActive.head
 
 	d.auth = auth
 	d.poll = internal.OpenPoll()
 	d.buffer = make([]byte, 0xFFFF)
 	d.fdconns = make(map[int]*Conn)
-	d.OnFdCount = func(int) {}
+	d.OnFdCount = func() {}
 
 	go func() {
 		runtime.LockOSThread()
@@ -74,10 +102,10 @@ func NewClient(auth string, addr string) (*Client, error) {
 
 			d.fdSpinLock()
 			if c.callback != nil {
-				d.attachConn(d.fdactive.head, c.detach())
+				d.attachConn(d.fdActive.head, c.detach())
 			}
 			if d.Timeout > 0 {
-				for conn, now := d.fdactive.tail.prev, time.Now().UnixNano(); conn != nil && conn != d.fdactive.head; conn = conn.prev {
+				for conn, now := d.fdActive.tail.prev, time.Now().UnixNano(); conn != nil && conn != d.fdActive.head; conn = conn.prev {
 					if conn.ts < now-int64(d.Timeout) {
 						err := fmt.Errorf("connection timed out (fd=%d)", conn.fd)
 						conn.callback(nil, err)
@@ -105,25 +133,6 @@ func NewClient(auth string, addr string) (*Client, error) {
 	return d, nil
 }
 
-type Client struct {
-	poll   *internal.Poll
-	auth   string
-	addr   syscall.Sockaddr
-	buffer []byte
-	count  int32
-	sslCtx *resh.SSLCtx
-
-	// lock protects the following fields
-	fdlock   atomic.Int64
-	fdconns  map[int]*Conn
-	fdfree   struct{ head, tail *Conn }
-	fdactive struct{ head, tail *Conn }
-
-	OnFdCount func(int)
-	OnError   func(resh.Error)
-	Timeout   time.Duration
-}
-
 type Conn struct {
 	prev      *Conn
 	next      *Conn
@@ -142,9 +151,24 @@ func (c *Conn) detach() *Conn {
 	return c
 }
 
-func (s *Client) Count() int {
-	return int(s.count)
+func (d *Client) String() string {
+	d.fdSpinLock()
+	defer d.fdSpinUnlock()
+	idle := 0
+	for c := d.fdIdle.head.next; c != d.fdIdle.tail; c = c.next {
+		idle++
+	}
+	active := 0
+	for c := d.fdActive.head.next; c != d.fdActive.tail; c = c.next {
+		active++
+	}
+	return fmt.Sprintf("(host=%v, idle=%d, active=%d, total=%d)",
+		internal.SockaddrToAddr(d.addr), idle, active, len(d.fdconns))
 }
+
+func (s *Client) ActiveCount() int { return s.fdActive.count }
+
+func (s *Client) IdleCount() int { return s.fdIdle.count }
 
 func (d *Client) Exec(args []any, cb func(*Reader, error)) error {
 	if d.OnError == nil {
@@ -189,20 +213,38 @@ func (d *Client) fdSpinUnlock() {
 }
 
 func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) error {
+RETRY:
 	d.fdSpinLock()
-	for conn := d.fdfree.tail.prev; conn != nil && conn != d.fdfree.head; conn = conn.prev {
+	for conn := d.fdIdle.head.next; conn != nil && conn != d.fdIdle.tail; conn = conn.next {
 		if len(conn.out) > 0 {
 			panic("BUG")
 		}
+
 		conn.callback = cb
 		conn.out = conn.out[:0]
 		cc(conn)
-		d.attachConn(d.fdactive.head, conn.detach())
+		d.attachConn(d.fdActive.head, conn.detach())
+		d.fdIdle.count--
+		d.fdActive.count++
+
+		// Free idle connections
+		for d.IdlePoolSize > 0 && d.fdIdle.count > d.IdlePoolSize {
+			conn := d.fdIdle.tail.prev
+			if conn != nil && conn != d.fdIdle.head {
+				d.closeConnWithError(conn, false, "", nil)
+			}
+		}
 		d.fdSpinUnlock()
+
+		d.OnFdCount()
 		d.poll.Trigger(conn.fd)
 		return nil
 	}
 	d.fdSpinUnlock()
+
+	if d.ActivePoolSize > 0 && d.fdActive.count >= d.ActivePoolSize {
+		goto RETRY
+	}
 
 	af := syscall.AF_INET
 	if _, ok := d.addr.(*syscall.SockaddrInet6); ok {
@@ -213,9 +255,11 @@ func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) error
 		return err
 	}
 	if err := syscall.SetNonblock(fd, true); err != nil {
+		syscall.Close(fd)
 		return err
 	}
 	if err := syscall.Connect(fd, d.addr); err != nil && err != syscall.EINPROGRESS {
+		syscall.Close(fd)
 		return err
 	}
 
@@ -232,12 +276,15 @@ func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) error
 		c.out = append(c.out, "\r\n"...)
 	}
 	cc(c)
+
 	d.fdSpinLock()
 	d.fdconns[fd] = c
-	d.count++
-	d.attachConn(d.fdactive.head, c)
-	d.poll.AddReadWrite(fd)
+	d.attachConn(d.fdActive.head, c)
+	d.fdActive.count++
 	d.fdSpinUnlock()
+
+	d.OnFdCount()
+	d.poll.AddReadWrite(fd)
 	return nil
 }
 
@@ -258,15 +305,18 @@ func (d *Client) closeConnWithError(c *Conn, lock bool, typ string, err error) {
 	if lock {
 		d.fdSpinLock()
 	}
-	d.count--
-	count := int(d.count)
+	if c.callback != nil {
+		d.fdActive.count--
+	} else {
+		d.fdIdle.count--
+	}
 	c.detach()
 	delete(d.fdconns, c.fd)
 	if lock {
 		d.fdSpinUnlock()
 	}
 
-	d.OnFdCount(count)
+	d.OnFdCount()
 
 	if err := syscall.Close(c.fd); err != nil {
 		d.OnError(resh.Error{Type: "close", Cause: err})
@@ -341,7 +391,7 @@ func (d *Client) readConn(c *Conn) {
 	}
 
 	c.in = append(c.in, d.buffer[:n]...)
-	if len(c.in) > resh.RequestMaxBytes {
+	if len(c.in) > ResponseMaxBytes {
 		d.closeConnWithError(c, true, "oversize", fmt.Errorf("response too large: %db", len(c.in)))
 		return
 	}
@@ -367,8 +417,14 @@ func (d *Client) readConn(c *Conn) {
 
 	if len(c.in) == 0 && c.authState == 0 {
 		d.fdSpinLock()
-		c.callback = nil
-		d.attachConn(d.fdfree.head, c.detach())
+		if d.IdlePoolSize == 0 || d.fdIdle.count < d.IdlePoolSize {
+			c.callback = nil
+			d.attachConn(d.fdIdle.head, c.detach())
+			d.fdActive.count--
+			d.fdIdle.count++
+		} else {
+			d.closeConnWithError(c, false, "", nil)
+		}
 		d.fdSpinUnlock()
 	}
 }

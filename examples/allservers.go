@@ -11,24 +11,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/coyove/resh"
+	"github.com/coyove/resh/examples/tools"
 	"github.com/coyove/resh/redis"
 	"github.com/gorilla/websocket"
 )
 
-func randData() string {
-	x := rand.Intn(65536) + 10240
-	b := make([]byte, x)
-	rand.Read(b)
-	return *(*string)(unsafe.Pointer(&b))
-}
-
 func main() {
-	rand.Seed(time.Now().Unix())
-	log.SetFlags(log.Lshortfile | log.Ltime)
-
 	ln, err := resh.Listen(false, "127.0.0.1:0")
 	if err != nil {
 		log.Fatalln(err)
@@ -43,16 +33,19 @@ func main() {
 		log.Println("error:", err)
 	}
 	client.Timeout = time.Second
+	client.PoolSize = 10
+	// client.OnFdCount = func() {
+	// 	fmt.Println(client.IdleCount())
+	// }
 
 	var succRedis, succHTTP, succWS int64
 	go func() {
 		for range time.Tick(time.Second) {
-			log.Printf("active=%d, redisclients=%d, redis echo=%d, http echo=%d, ws echo=%d\n",
-				client.Count(), ln.Count(), succRedis, succHTTP, succWS)
+			log.Printf("active=%d, client=%v, redis echo=%d, http echo=%d, ws echo=%d\n",
+				ln.Count(), client, succRedis, succHTTP, succWS)
 		}
 	}()
 
-	resh.RequestMaxBytes = 10 * 1024 * 1024
 	ln.OnError = client.OnError
 	ln.OnRedis = func(c *resh.Redis) bool {
 		if c.Conn.Tag == nil {
@@ -140,7 +133,7 @@ func main() {
 				}
 			}()
 			for i := 0; i < 100; i++ {
-				x := randData()
+				x := tools.RandData()
 				m[x] = new(int)
 			}
 			for x := range m {
@@ -167,7 +160,7 @@ func main() {
 				defer wg.Done()
 				x := 1 + rand.Intn(10)
 				for i := 0; i < x; i++ {
-					x := randData()[:10]
+					x := tools.RandData()[:10]
 
 					var resp *http.Response
 					var err error
@@ -198,11 +191,11 @@ func main() {
 			}()
 			x := 1 + rand.Intn(10)
 			for i := 0; i < x; i++ {
-				x := randData()
+				x := tools.RandData()
 				off := rand.Intn(4) + 4
 				args := []any{"test", off}
 				for i := 0; i < off; i++ {
-					args = append(args, randData())
+					args = append(args, tools.RandData())
 				}
 				args = append(args, x)
 

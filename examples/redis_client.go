@@ -1,48 +1,99 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
-	"math/rand"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coyove/resh"
+	"github.com/coyove/resh/examples/tools"
 	"github.com/coyove/resh/redis"
 )
 
+var addr = flag.String("addr", "", "")
+var auth = flag.String("auth", "", "")
+var clients = flag.Int("clients", 200, "")
+var qps = flag.Int("qps", 100, "")
+var poolSize = flag.Int("pool", 1000, "")
+
 func main() {
-	rand.Seed(time.Now().Unix())
-	log.SetFlags(log.Lshortfile | log.Ltime)
+	flag.Parse()
 
-	ln, err := resh.Listen(false, "127.0.0.1:0")
-	if err != nil {
-		log.Fatalln(err)
-	}
-	log.Println("listen on", ln.Addr())
-
-	resh.RequestMaxBytes = 10 * 1024 * 1024
-	ln.OnError = func(err resh.Error) {
-		log.Println("error:", err)
-	}
-	ln.OnRedis = func(c *resh.Redis) bool {
-		time.AfterFunc(time.Millisecond*10, func() {
-			off, _ := c.Int64(1)
-			c.WriteBulk(c.Get(1 + int(off) + 1))
-			c.Flush()
-			c.Release()
-		})
-		return true
-	}
-	go ln.Serve()
-
-	client, err := redis.NewClient(ln.Addr().String())
+	client, err := redis.NewClient(*auth, *addr)
 	if err != nil {
 		panic(err)
 	}
-	client.OnError = ln.OnError
+	client.OnError = func(err resh.Error) {
+		log.Println(err)
+	}
+	client.IdlePoolSize = *poolSize
+	client.ActivePoolSize = *poolSize * 2
+	client.Timeout = time.Second * 5
 
-	log.Println(client.Exec([]any{"GET", "1", "zzz", "ab", "c"}, func(resp *redis.Reader) {
-		fmt.Println(resp)
-	}))
-	select {}
+	var workers atomic.Int64
+	go func() {
+		for range time.Tick(time.Second) {
+			log.Printf("active=%d, idle=%d, workers=%d", client.ActiveCount(), client.IdleCount(), workers.Load())
+		}
+	}()
+
+	m := map[string]string{}
+	for i := 0; ; i++ {
+		start := time.Now()
+		var wg sync.WaitGroup
+		ki := 0
+		for c := 0; c < *clients; c++ {
+			for q := 0; q < *qps; q++ {
+				wg.Add(1)
+				workers.Add(1)
+
+				var cmd []any
+				var get, met bool
+				var k string
+
+				if i%10 == 0 {
+					k = fmt.Sprintf("resh-test-%d", ki)
+					ki++
+					v := tools.RandData()
+					cmd = []any{"SET", k, v}
+					m[k] = v
+				} else {
+					k = fmt.Sprintf("resh-test-%d", tools.Intn(*clients**qps))
+					cmd = []any{"GET", k}
+					get = true
+				}
+
+				err := client.Exec(cmd, func(resp *redis.Reader, err error) {
+					if err != nil {
+						log.Fatal(err)
+					}
+					if met {
+						log.Fatal("double execution")
+					}
+					met = true
+					if get {
+						v2 := resp.Str()
+						old := m[k]
+						if v2 != old {
+							log.Fatalf("value mismatch %s %d %v", k, len(v2), len(old))
+						}
+					} else {
+						if r := resp.Str(); r != "OK" {
+							log.Fatalf("set %q", r)
+						}
+					}
+					workers.Add(-1)
+					wg.Done()
+				})
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+		wg.Wait()
+		fmt.Println("round", i, "in", time.Since(start))
+	}
 }

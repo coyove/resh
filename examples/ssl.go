@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coyove/resh"
+	"github.com/coyove/resh/examples/tools"
 )
 
 //go:embed cert.pem
@@ -24,13 +24,6 @@ var cert []byte
 
 //go:embed key.pem
 var key []byte
-
-func randData() []byte {
-	x := rand.Intn(65536) + 10240
-	b := make([]byte, x)
-	rand.Read(b)
-	return b
-}
 
 var role = flag.String("role", "", "")
 
@@ -81,7 +74,7 @@ func main() {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					x := randData()
+					x := tools.RandDataBytes()
 					resp, err := http.Post("https://127.0.0.1:6000", "text/plain", bytes.NewReader(x))
 					if err != nil {
 						fmt.Println(err)
