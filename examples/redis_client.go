@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,7 @@ var auth = flag.String("auth", "", "")
 var clients = flag.Int("clients", 200, "")
 var qps = flag.Int("qps", 100, "")
 var poolSize = flag.Int("pool", 1000, "")
+var dataSize = flag.Int("data", 10000, "")
 
 func main() {
 	flag.Parse()
@@ -29,8 +31,7 @@ func main() {
 	client.OnError = func(err resh.Error) {
 		log.Println(err)
 	}
-	client.IdlePoolSize = *poolSize
-	client.ActivePoolSize = *poolSize * 2
+	client.PoolSize = *poolSize
 	client.Timeout = time.Second * 5
 
 	var workers atomic.Int64
@@ -45,6 +46,7 @@ func main() {
 		start := time.Now()
 		var wg sync.WaitGroup
 		ki := 0
+		tot := 0.0
 		for c := 0; c < *clients; c++ {
 			for q := 0; q < *qps; q++ {
 				wg.Add(1)
@@ -57,7 +59,7 @@ func main() {
 				if i%10 == 0 {
 					k = fmt.Sprintf("resh-test-%d", ki)
 					ki++
-					v := tools.RandData()
+					v := tools.RandDataN(*dataSize)
 					cmd = []any{"SET", k, v}
 					m[k] = v
 				} else {
@@ -66,9 +68,11 @@ func main() {
 					get = true
 				}
 
-				err := client.Exec(cmd, func(resp *redis.Reader, err error) {
+				start := time.Now()
+				client.Exec(cmd, func(resp *redis.Reader, err error) {
 					if err != nil {
-						log.Fatal(err)
+						_, fn, line, _ := runtime.Caller(1)
+						log.Fatalln(fn, line, err)
 					}
 					if met {
 						log.Fatal("double execution")
@@ -87,13 +91,11 @@ func main() {
 					}
 					workers.Add(-1)
 					wg.Done()
+					tot += time.Since(start).Seconds()
 				})
-				if err != nil {
-					log.Fatal(err)
-				}
 			}
 		}
 		wg.Wait()
-		fmt.Println("round", i, "in", time.Since(start))
+		fmt.Println("round", i, "in", time.Since(start), tot/float64(*clients)/float64(*qps))
 	}
 }

@@ -38,11 +38,10 @@ type Client struct {
 		count      int
 	}
 
-	OnFdCount      func()
-	OnError        func(resh.Error)
-	Timeout        time.Duration
-	IdlePoolSize   int
-	ActivePoolSize int
+	OnFdCount func()
+	OnError   func(resh.Error)
+	Timeout   time.Duration
+	PoolSize  int
 }
 
 func NewClient(auth string, addr string) (*Client, error) {
@@ -170,12 +169,12 @@ func (s *Client) ActiveCount() int { return s.fdActive.count }
 
 func (s *Client) IdleCount() int { return s.fdIdle.count }
 
-func (d *Client) Exec(args []any, cb func(*Reader, error)) error {
+func (d *Client) Exec(args []any, cb func(*Reader, error)) {
 	if d.OnError == nil {
 		panic("missing OnError handler")
 	}
 
-	return d.activateFreeConn(cb, func(c *Conn) {
+	d.activateFreeConn(cb, func(c *Conn) {
 		c.out = append(c.out, '*')
 		c.out = strconv.AppendInt(c.out, int64(len(args)), 10)
 		c.out = append(c.out, "\r\n"...)
@@ -212,7 +211,7 @@ func (d *Client) fdSpinUnlock() {
 	d.fdlock.Store(0)
 }
 
-func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) error {
+func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) {
 RETRY:
 	d.fdSpinLock()
 	for conn := d.fdIdle.head.next; conn != nil && conn != d.fdIdle.tail; conn = conn.next {
@@ -228,21 +227,22 @@ RETRY:
 		d.fdActive.count++
 
 		// Free idle connections
-		for d.IdlePoolSize > 0 && d.fdIdle.count > d.IdlePoolSize {
+		for d.PoolSize > 0 && len(d.fdconns) > d.PoolSize {
 			conn := d.fdIdle.tail.prev
 			if conn != nil && conn != d.fdIdle.head {
 				d.closeConnWithError(conn, false, "", nil)
+			} else {
+				break
 			}
 		}
 		d.fdSpinUnlock()
 
 		d.OnFdCount()
 		d.poll.Trigger(conn.fd)
-		return nil
+		return
 	}
 	d.fdSpinUnlock()
-
-	if d.ActivePoolSize > 0 && d.fdActive.count >= d.ActivePoolSize {
+	if d.PoolSize > 0 && d.fdActive.count+d.fdIdle.count >= d.PoolSize {
 		goto RETRY
 	}
 
@@ -252,15 +252,38 @@ RETRY:
 	}
 	fd, err := syscall.Socket(af, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return err
+		cb(nil, err)
+		return
 	}
+	// if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+	// 	syscall.Close(fd)
+	// 	cb(nil, err)
+	// 	return
+	// }
+	// if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+	// 	syscall.Close(fd)
+	// 	cb(nil, err)
+	// 	return
+	// }
+	// if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, 24, 1); err != nil {
+	// 	syscall.Close(fd)
+	// 	cb(nil, err)
+	// 	return
+	// }
+	// if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{0, 0, 0, 0}, Port: 0}); err != nil {
+	// 	syscall.Close(fd)
+	// 	cb(nil, err)
+	// 	return
+	// }
 	if err := syscall.SetNonblock(fd, true); err != nil {
 		syscall.Close(fd)
-		return err
+		cb(nil, err)
+		return
 	}
 	if err := syscall.Connect(fd, d.addr); err != nil && err != syscall.EINPROGRESS {
 		syscall.Close(fd)
-		return err
+		cb(nil, err)
+		return
 	}
 
 	c := &Conn{
@@ -285,7 +308,6 @@ RETRY:
 
 	d.OnFdCount()
 	d.poll.AddReadWrite(fd)
-	return nil
 }
 
 func (s *Client) attachConn(head *Conn, c *Conn) {
@@ -417,7 +439,7 @@ func (d *Client) readConn(c *Conn) {
 
 	if len(c.in) == 0 && c.authState == 0 {
 		d.fdSpinLock()
-		if d.IdlePoolSize == 0 || d.fdIdle.count < d.IdlePoolSize {
+		if d.PoolSize == 0 || len(d.fdconns) <= d.PoolSize {
 			c.callback = nil
 			d.attachConn(d.fdIdle.head, c.detach())
 			d.fdActive.count--

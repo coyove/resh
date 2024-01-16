@@ -31,6 +31,13 @@ func RandDataBytes() []byte {
 	return b
 }
 
+func RandDataN(n int) string {
+	x := rand.Intn(n/2) + n/2
+	b := make([]byte, x)
+	rand.Read(b)
+	return *(*string)(unsafe.Pointer(&b))
+}
+
 var rmu sync.Mutex
 
 func Intn(n int) int {
