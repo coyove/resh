@@ -442,10 +442,15 @@ PARSE_NEXT:
 	} else {
 		req := c.srs.redis
 		req.Conn = c
-		c.truncateInputBuffer(int(req.read))
+		remain := c.truncateInputBuffer(int(req.read))
 		if !s.OnRedis(req) {
 			s.closeConnWithError(c, "", nil)
 			return
+		}
+		if remain > 0 {
+			c.srs = serverReadState{}
+			n = 0
+			goto PARSE_NEXT
 		}
 	}
 	c.srs = serverReadState{}

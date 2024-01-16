@@ -22,21 +22,19 @@ var poolSize = flag.Int("pool", 1000, "")
 func main() {
 	flag.Parse()
 
-	client, err := redis.NewClient(*auth, *addr)
+	client, err := redis.NewClient(*auth, *addr, *poolSize)
 	if err != nil {
 		panic(err)
 	}
 	client.OnError = func(err resh.Error) {
 		log.Println(err)
 	}
-	client.IdlePoolSize = *poolSize
-	client.ActivePoolSize = *poolSize * 2
-	client.Timeout = time.Second * 5
+	client.Timeout = time.Second
 
 	var workers atomic.Int64
 	go func() {
 		for range time.Tick(time.Second) {
-			log.Printf("active=%d, idle=%d, workers=%d", client.ActiveCount(), client.IdleCount(), workers.Load())
+			log.Printf("active=%v, workers=%d", client.Count(), workers.Load())
 		}
 	}()
 
@@ -66,7 +64,7 @@ func main() {
 					get = true
 				}
 
-				err := client.Exec(cmd, func(resp *redis.Reader, err error) {
+				client.Exec(cmd, func(resp *redis.Reader, err error) {
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -88,9 +86,6 @@ func main() {
 					workers.Add(-1)
 					wg.Done()
 				})
-				if err != nil {
-					log.Fatal(err)
-				}
 			}
 		}
 		wg.Wait()

@@ -25,7 +25,7 @@ func main() {
 	}
 	log.Println("listen on", ln.Addr())
 
-	client, err := redis.NewClient("pwd", ln.Addr().String())
+	client, err := redis.NewClient("pwd", ln.Addr().String(), 100)
 	if err != nil {
 		panic(err)
 	}
@@ -33,7 +33,6 @@ func main() {
 		log.Println("error:", err)
 	}
 	client.Timeout = time.Second
-	client.PoolSize = 10
 	// client.OnFdCount = func() {
 	// 	fmt.Println(client.IdleCount())
 	// }
@@ -42,7 +41,7 @@ func main() {
 	go func() {
 		for range time.Tick(time.Second) {
 			log.Printf("active=%d, client=%v, redis echo=%d, http echo=%d, ws echo=%d\n",
-				ln.Count(), client, succRedis, succHTTP, succWS)
+				ln.Count(), client.Count(), succRedis, succHTTP, succWS)
 		}
 	}()
 
@@ -60,12 +59,12 @@ func main() {
 			c.Conn.Tag = true
 			c.WriteSimpleString("OK")
 		} else {
-			time.AfterFunc(time.Millisecond*10, func() {
-				off, _ := c.Int64(1)
-				c.WriteBulk(c.Get(1 + int(off) + 1))
-				c.Flush()
-				c.Release()
-			})
+			// time.AfterFunc(time.Millisecond*10, func() {
+			off, _ := c.Int64(1)
+			c.WriteBulk(c.Get(1 + int(off) + 1))
+			c.Flush()
+			c.Release()
+			// })
 		}
 		return true
 	}
