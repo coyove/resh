@@ -106,9 +106,7 @@ func NewClient(auth string, addr string) (*Client, error) {
 			if d.Timeout > 0 {
 				for conn, now := d.fdActive.tail.prev, time.Now().UnixNano(); conn != nil && conn != d.fdActive.head; conn = conn.prev {
 					if conn.ts < now-int64(d.Timeout) {
-						err := fmt.Errorf("connection timed out (fd=%d)", conn.fd)
-						conn.callback(nil, err)
-						d.closeConnWithError(conn, false, "timeout", err)
+						d.closeConnWithError(conn, false, "timeout", fmt.Errorf("connection timed out (fd=%d)", conn.fd))
 					} else {
 						break
 					}
@@ -118,7 +116,7 @@ func NewClient(auth string, addr string) (*Client, error) {
 
 			if ev&syscall.EPOLLOUT > 0 {
 				if c.callback == nil {
-					d.OnError(resh.Error{Type: "warning", Cause: fmt.Errorf("write: fd %d is not active", fd)})
+					d.closeConnWithError(c, true, "write", fmt.Errorf("write: fd %d is not active", fd))
 					return nil
 				}
 				d.writeConn(c)
@@ -133,15 +131,20 @@ func NewClient(auth string, addr string) (*Client, error) {
 }
 
 type Conn struct {
-	prev      *Conn
-	next      *Conn
-	ts        int64
-	fd        int
-	callback  func(*Reader, error)
-	ssl       *resh.SSL
-	in        []byte
-	out       []byte
-	authState byte // 0: no auth/auth passed, 1: need auth, 2: AUTH responded
+	prev     *Conn
+	next     *Conn
+	ts       int64
+	fd       int
+	callback func(*Reader, error)
+	ssl      *resh.SSL
+	in       []byte
+	out      []byte
+
+	// 0: no auth (default)                <---------------------------+
+	// 1: need auth, the first response will be treated as AUTH result |
+	// 2: received AUTH result, waiting for the actual CMD response    |
+	//    after receiving any response     ----------------------------+
+	authState byte
 }
 
 func (c *Conn) detach() *Conn {
@@ -169,16 +172,16 @@ func (s *Client) ActiveCount() int { return s.fdActive.count }
 
 func (s *Client) IdleCount() int { return s.fdIdle.count }
 
-func (d *Client) Exec(args []any, cb func(*Reader, error)) {
+func (d *Client) Exec(cmdArgs []any, cb func(*Reader, error)) {
 	if d.OnError == nil {
 		panic("missing OnError handler")
 	}
 
 	d.activateFreeConn(cb, func(c *Conn) {
 		c.out = append(c.out, '*')
-		c.out = strconv.AppendInt(c.out, int64(len(args)), 10)
+		c.out = strconv.AppendInt(c.out, int64(len(cmdArgs)), 10)
 		c.out = append(c.out, "\r\n"...)
-		for _, a := range args {
+		for _, a := range cmdArgs {
 			var s string
 			switch a := a.(type) {
 			case []byte:
@@ -214,7 +217,7 @@ func (d *Client) fdSpinUnlock() {
 func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) {
 RETRY:
 	d.fdSpinLock()
-	for conn := d.fdIdle.head.next; conn != nil && conn != d.fdIdle.tail; conn = conn.next {
+	if conn := d.fdIdle.head.next; conn != nil && conn != d.fdIdle.tail {
 		if len(conn.out) > 0 {
 			panic("BUG")
 		}
@@ -242,6 +245,8 @@ RETRY:
 		return
 	}
 	d.fdSpinUnlock()
+
+	// No lock here, so we only have a rough number of total connections.
 	if d.PoolSize > 0 && d.fdActive.count+d.fdIdle.count >= d.PoolSize {
 		goto RETRY
 	}
@@ -255,26 +260,6 @@ RETRY:
 		cb(nil, err)
 		return
 	}
-	// if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
-	// 	syscall.Close(fd)
-	// 	cb(nil, err)
-	// 	return
-	// }
-	// if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-	// 	syscall.Close(fd)
-	// 	cb(nil, err)
-	// 	return
-	// }
-	// if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, 24, 1); err != nil {
-	// 	syscall.Close(fd)
-	// 	cb(nil, err)
-	// 	return
-	// }
-	// if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{0, 0, 0, 0}, Port: 0}); err != nil {
-	// 	syscall.Close(fd)
-	// 	cb(nil, err)
-	// 	return
-	// }
 	if err := syscall.SetNonblock(fd, true); err != nil {
 		syscall.Close(fd)
 		cb(nil, err)
@@ -343,9 +328,19 @@ func (d *Client) closeConnWithError(c *Conn, lock bool, typ string, err error) {
 	if err := syscall.Close(c.fd); err != nil {
 		d.OnError(resh.Error{Type: "close", Cause: err})
 	}
+
 	if err != nil {
 		d.OnError(resh.Error{Type: typ, Cause: err})
 	}
+
+	if typ != "free" && c.callback != nil {
+		if err == nil {
+			c.callback(nil, net.ErrClosed)
+		} else {
+			c.callback(nil, err)
+		}
+	}
+
 	if c.ssl != nil {
 		c.ssl.Close()
 	}
@@ -382,7 +377,6 @@ func (s *Client) writeConn(c *Conn) {
 	} else {
 		c.out = c.out[n:]
 		s.poll.ModReadWrite(c.fd)
-		resh.ShortWriteEmitter()
 	}
 }
 
@@ -445,7 +439,7 @@ func (d *Client) readConn(c *Conn) {
 			d.fdActive.count--
 			d.fdIdle.count++
 		} else {
-			d.closeConnWithError(c, false, "", nil)
+			d.closeConnWithError(c, false, "free", nil)
 		}
 		d.fdSpinUnlock()
 	}

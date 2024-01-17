@@ -46,6 +46,8 @@ func main() {
 		}
 	}()
 
+	// time.AfterFunc(time.Second*2, func() { client.Close() })
+
 	ln.OnError = client.OnError
 	ln.OnRedis = func(c *resh.Redis) bool {
 		if c.Conn.Tag == nil {
@@ -202,7 +204,7 @@ func main() {
 				wg.Add(1)
 				client.Exec(args, func(d *redis.Reader, err error) {
 					if err != nil {
-						log.Fatal(err)
+						log.Fatalln("exec error:", err)
 					}
 					y := d.Str()
 					if x != y {
