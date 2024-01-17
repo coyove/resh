@@ -95,6 +95,10 @@ func (r *Reader) err() error {
 	return nil
 }
 
+func (r *Reader) IsNil() bool {
+	return btos(r.buf) == "$-1\r\n"
+}
+
 func (r *Reader) Bytes() []byte {
 	_, _, s, _ := r.readNext()
 	return s
