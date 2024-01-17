@@ -151,7 +151,7 @@ func (r *Reader) readNext() (byte, int64, []byte, *Reader) {
 			x, _ := readElement(r.buf[c:])
 			c += x
 		}
-		d := &Reader{buf: r.buf[:c]}
+		d := &Reader{buf: r.buf[idx+2 : c]}
 		r.buf = r.buf[c:]
 		return 'a', 0, nil, d
 	}
@@ -173,4 +173,8 @@ func (r *Reader) String() string {
 	}
 	buf.WriteString(")")
 	return buf.String()
+}
+
+func (r *Reader) Raw() []byte {
+	return r.buf
 }
