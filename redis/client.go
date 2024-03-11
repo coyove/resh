@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,7 +28,7 @@ type Client struct {
 	sslCtx *resh.SSLCtx
 
 	// fdlock protects the following fields
-	fdlock  atomic.Int64
+	fdlock  sync.Mutex
 	fdconns map[int]*Conn
 	fdIdle  struct {
 		head, tail *Conn
@@ -131,6 +132,7 @@ func NewClient(auth string, addr string) (*Client, error) {
 }
 
 type Conn struct {
+	lock     atomic.Int64
 	prev     *Conn
 	next     *Conn
 	ts       int64
@@ -205,13 +207,11 @@ func (d *Client) Exec(cmdArgs []any, cb func(*Reader, error)) {
 }
 
 func (d *Client) fdSpinLock() {
-	for i := 0; !d.fdlock.CompareAndSwap(0, 1); i++ {
-		runtime.Gosched()
-	}
+	d.fdlock.Lock()
 }
 
 func (d *Client) fdSpinUnlock() {
-	d.fdlock.Store(0)
+	d.fdlock.Unlock()
 }
 
 func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) {

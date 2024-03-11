@@ -163,6 +163,9 @@ func (r *Reader) readNext() (byte, int64, []byte, *Reader) {
 }
 
 func (r *Reader) String() string {
+	if r.IsNil() {
+		return "nil"
+	}
 	d := *r
 	buf := bytes.NewBufferString("(")
 	for a, i := d.Next(), 0; a != nil; a, i = d.Next(), i+1 {
