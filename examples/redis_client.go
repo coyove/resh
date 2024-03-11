@@ -24,14 +24,13 @@ var dataSize = flag.Int("data", 10000, "")
 func main() {
 	flag.Parse()
 
-	client, err := redis.NewClient(*auth, *addr)
+	client, err := redis.NewClient(*poolSize, *auth, *addr)
 	if err != nil {
 		panic(err)
 	}
 	client.OnError = func(err resh.Error) {
 		log.Println(err)
 	}
-	client.PoolSize = *poolSize
 	client.Timeout = time.Second * 5
 
 	var workers atomic.Int64

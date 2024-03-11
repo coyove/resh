@@ -24,7 +24,7 @@ func NewMultiCoreClients(n, poolSize int, auth, addr string, onError func(resh.E
 	var err error
 	for i := range clients {
 		i := i
-		clients[i], err = NewClient(auth, addr)
+		clients[i], err = NewClient(poolSize/n+1, auth, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -35,7 +35,6 @@ func NewMultiCoreClients(n, poolSize int, auth, addr string, onError func(resh.E
 			}
 		}
 		clients[i].OnError = onError
-		clients[i].PoolSize = poolSize/n + 1
 	}
 
 	return c, nil
