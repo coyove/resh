@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/base64"
 	"log"
 	"math/rand"
 	"sync"
@@ -28,6 +29,8 @@ func RandDataBytes() []byte {
 	x := rand.Intn(65536) + 10240
 	b := make([]byte, x)
 	rand.Read(b)
+	base64.RawURLEncoding.Encode(b, b[:len(b)*3/4])
+	copy(b[len(b)-10:], "0123456789")
 	return b
 }
 
