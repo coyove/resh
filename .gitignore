@@ -8,3 +8,4 @@ test.sh
 ./bench
 ssl
 openssl-amd64
+git.sh

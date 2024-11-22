@@ -59,13 +59,21 @@ func (p *Poll) Wait(iter func(fd int, events uint32) error) error {
 			return err
 		}
 		if err := p.writesFd.SwapOutForEach(func(fd int) error {
-			return iter(fd, syscall.EPOLLOUT)
+			return iter(fd, WRITE)
 		}); err != nil {
 			return err
 		}
 		for i := 0; i < n; i++ {
 			if fd := int(events[i].Fd); fd != p.wfd {
-				if err := iter(fd, events[i].Events); err != nil {
+				ev := events[i].Events
+				var flag uint32
+				if ev&syscall.EPOLLOUT > 0 {
+					flag |= WRITE
+				}
+				if ev&syscall.EPOLLIN > 0 {
+					flag |= READ
+				}
+				if err := iter(fd, flag); err != nil {
 					return err
 				}
 			} else if fd == p.wfd {

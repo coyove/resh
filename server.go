@@ -13,7 +13,6 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -28,6 +27,7 @@ var (
 	WriteRaceEmitter  = func(int) {}
 	RequestMaxBytes   = 1 * 1024 * 1024
 	TCPKeepAlive      = 60
+	DebugFlag         = os.Getenv("RESH_DEBUG") != ""
 )
 
 func Listen(reuse bool, addr string) (*Listener, error) {
@@ -75,197 +75,124 @@ type Listener struct {
 	Timeout   time.Duration
 }
 
-func (s *Listener) Addr() net.Addr {
-	return s.raw.Addr()
+func (ln *Listener) Addr() net.Addr {
+	return ln.raw.Addr()
 }
 
-func (s *Listener) Count() int {
-	return int(s.count)
+func (ln *Listener) Count() int {
+	return int(ln.count)
 }
 
-func (s *Listener) LoadCertPEMs(cert, key []byte) error {
+func (ln *Listener) LoadCertPEMs(cert, key []byte) error {
+	runtime.LockOSThread()
 	ctx, err := sslNewCtx(cert, key)
 	if err != nil {
 		return err
 	}
-	runtime.LockOSThread()
-	s.sslCtx = ctx
+	ln.sslCtx = ctx
 	return nil
 }
 
-type Conn struct {
-	Tag any
-
-	prev *Conn
-	next *Conn
-	ts   int64
-
-	ws  *Websocket
-	fd  int
-	srs serverReadState
-	sa  syscall.Sockaddr
-	ln  *Listener
-	ssl *SSL
-
-	closed atomic.Int32
-
-	// lock protects the following fields
-	lock atomic.Int32
-	in   []byte
-	out  []byte
-}
-
-func (c *Conn) spinLock() {
-	for i := 0; !c.lock.CompareAndSwap(0, 1); i++ {
-		WriteRaceEmitter(i)
-	}
-}
-
-func (c *Conn) spinUnlock() {
-	c.lock.Store(0)
-}
-
-func (c *Conn) RemoteAddr() net.Addr {
-	return internal.SockaddrToAddr(c.sa)
-}
-
-func (c *Conn) Write(p []byte) (int, error) {
-	c.spinLock()
-	c.out = append(c.out, p...)
-	c.spinUnlock()
-	return len(p), nil
-}
-
-func (c *Conn) _writeInt(v int64, b int) {
-	c.spinLock()
-	c.out = strconv.AppendInt(c.out, v, b)
-	c.spinUnlock()
-}
-
-func (c *Conn) _writeString(v string) {
-	c.spinLock()
-	c.out = append(c.out, v...)
-	c.spinUnlock()
-}
-
-func (c *Conn) Flush() {
-	c.ln.poll.Trigger(c.fd)
-}
-
-func (c *Conn) truncateInputBuffer(sz int) int {
-	c.spinLock()
-	c.in = c.in[sz:]
-	remain := len(c.in)
-	c.spinUnlock()
-	return remain
-}
-
-func (c *Conn) ReuseInputBuffer(in []byte) {
-	c.spinLock()
-	if len(c.in) == 0 {
-		c.in = in[:0]
-	}
-	c.spinUnlock()
-}
-
-func (c *Conn) detach() *Conn {
-	c.prev.next = c.next
-	c.next.prev = c.prev
-	return c
-}
-
-func (s *Listener) Serve() {
-	if s.OnError == nil {
+func (ln *Listener) Serve() {
+	if ln.OnError == nil {
 		panic("missing OnError handler")
 	}
-	if s.OnRedis == nil {
-		s.OnRedis = func(c *Redis) bool {
+	if ln.OnRedis == nil {
+		ln.OnRedis = func(c *Redis) bool {
 			c.WriteError("OnRedis handler not found")
 			return true
 		}
 	}
-	if s.OnHTTP == nil {
-		s.OnHTTP = func(c *HTTP) bool {
+	if ln.OnHTTP == nil {
+		ln.OnHTTP = func(c *HTTP) bool {
 			c.Text(500, "OnHTTP handler not found")
 			return true
 		}
 	}
-	if s.OnFdCount == nil {
-		s.OnFdCount = func(int) {}
+	if ln.OnFdCount == nil {
+		ln.OnFdCount = func(int) {}
 	}
 
-	s.poll = internal.OpenPoll()
-	s.buffer = make([]byte, 0xFFFF)
-	s.fdconns = make(map[int]*Conn)
-	s.poll.AddRead(s.fd)
+	ln.poll = internal.OpenPoll()
+	ln.buffer = make([]byte, 0xFFFF)
+	ln.fdconns = make(map[int]*Conn)
+	ln.poll.AddRead(ln.fd)
 
 	defer func() {
 		if r := recover(); r != nil {
-			s.OnError(Error{Type: "panic", Cause: fmt.Errorf("fatal error %v: %s", r, debug.Stack())})
+			ln.OnError(Error{Type: "panic", Cause: fmt.Errorf("fatal error %v: %s", r, debug.Stack())})
 		}
 
-		for _, c := range s.fdconns {
-			s.closeConnWithError(c, "", nil)
+		for _, c := range ln.fdconns {
+			ln.closeConnWithError(c, "", nil)
 		}
-		s.poll.Close()
+		ln.poll.Close()
 		//println("-- server stopped")
 	}()
 
 	//fmt.Println("-- loop started --", l.idx)
 
-	s.poll.Wait(func(fd int, ev uint32) error {
-		if fd == s.fd {
+	ln.poll.Wait(func(fd int, ev uint32) error {
+		if fd == ln.fd {
 			nfd, sa, err := syscall.Accept(fd)
 			if err != nil {
 				if err == syscall.EAGAIN {
 					return nil
 				}
-				s.OnError(Error{Type: "accept", Cause: err})
+				ln.OnError(Error{Type: "accept", Cause: err})
 				return nil
 			}
 			if err := syscall.SetNonblock(nfd, true); err != nil {
-				s.OnError(Error{Type: "setnonblock", Cause: err})
+				ln.OnError(Error{Type: "setnonblock", Cause: err})
 				return nil
 			}
 
-			c := &Conn{fd: nfd, sa: sa, ln: s}
-			if s.sslCtx != nil {
-				ssl, err := s.sslCtx.accept(nfd)
+			c := &Conn{fd: nfd, sa: sa, ln: ln}
+			if ln.sslCtx != nil {
+				ssl, err := ln.sslCtx.accept(nfd)
 				if err != nil {
-					s.OnError(Error{Type: "ssl", Cause: err})
+					ln.OnError(Error{Type: "ssl", Cause: err})
 					return nil
 				}
 				c.ssl = ssl
 			}
 			internal.SetKeepAlive(c.fd, TCPKeepAlive)
 
-			s.poll.AddRead(c.fd)
-			s.fdconns[c.fd] = c
-			s.attachConn(c)
-			s.OnFdCount(int(atomic.AddInt32(&s.count, 1)))
+			ln.poll.AddRead(c.fd)
+			ln.fdconns[c.fd] = c
+			ln.attachConn(c)
+			ln.OnFdCount(int(atomic.AddInt32(&ln.count, 1)))
+
+			if DebugFlag {
+				fmt.Printf("[%d] accept fd %d\n", ln.count, c.fd)
+			}
 		} else {
-			c, ok := s.fdconns[fd]
+			c, ok := ln.fdconns[fd]
 			if !ok {
-				s.OnError(Error{Type: "lookup", Cause: fmt.Errorf("fd %d not found", fd)})
+				if DebugFlag {
+					// The fd has already been closed, concurrent writes or reads are not possible anymore.
+					// This is really not a big deal because protocols at application layer can detect and handle it.
+					ln.OnError(Error{Type: "lookup", Cause: fmt.Errorf("fd %d not found", fd)})
+				}
 				return nil
 			}
+			ln.attachConn(c.detach())
 
-			s.attachConn(c.detach())
 			if ev&internal.WRITE > 0 {
-				s.writeConn(c)
+				ln.writeConn(c)
 			}
 			if ev&internal.READ > 0 {
-				s.readConn(c)
+				ln.readConn(c)
 			}
 			if ev&internal.EOF > 0 {
-				s.closeConnWithError(c, "eof", nil)
+				ln.closeConnWithError(c, "eof", nil)
 			}
 		}
 
-		if s.Timeout > 0 {
-			for conn, now := s.fdtail.prev, time.Now().UnixNano(); conn != nil && conn != s.fdhead; conn = conn.prev {
-				if conn.ts < now-int64(s.Timeout) {
-					s.closeConnWithError(conn, "timeout", fmt.Errorf("connection to %v timed out (fd=%d)", conn.RemoteAddr(), conn.fd))
+		if ln.Timeout > 0 {
+			for conn, now := ln.fdtail.prev, time.Now().UnixNano(); conn != nil && conn != ln.fdhead; conn = conn.prev {
+				if conn.ts < now-int64(ln.Timeout) {
+					ln.closeConnWithError(conn, "timeout", fmt.Errorf("connection to %v timed out (fd=%d)", conn.RemoteAddr(), conn.fd))
 				} else {
 					break
 				}
@@ -275,46 +202,50 @@ func (s *Listener) Serve() {
 	})
 }
 
-func (s *Listener) attachConn(c *Conn) {
-	s.fdhead.next.prev = c
-	c.next = s.fdhead.next
+func (ln *Listener) attachConn(c *Conn) {
+	ln.fdhead.next.prev = c
+	c.next = ln.fdhead.next
 
-	s.fdhead.next = c
-	c.prev = s.fdhead
+	ln.fdhead.next = c
+	c.prev = ln.fdhead
 
 	c.ts = time.Now().UnixNano()
 }
 
-func (s *Listener) closeConnWithError(c *Conn, typ string, err error) {
+func (ln *Listener) closeConnWithError(c *Conn, errType string, err error) {
 	if !c.closed.CompareAndSwap(0, 1) {
 		return
 	}
 
 	if c.ws != nil {
-		s.OnWSClose(c.ws, c.ws.closingData)
+		ln.OnWSClose(c.ws, c.ws.closingData)
 	}
-	// _, _, line, _ := runtime.Caller(1)
-	// fmt.Println("close", c.fd, err, line)
-	s.OnFdCount(int(atomic.AddInt32(&s.count, -1)))
+
+	ln.OnFdCount(int(atomic.AddInt32(&ln.count, -1)))
 	c.detach()
-	delete(s.fdconns, c.fd)
+	delete(ln.fdconns, c.fd)
+
+	if DebugFlag {
+		_, fn, line, _ := runtime.Caller(1)
+		fmt.Printf("[%d] close fd %d: %v at %s:%d\n", ln.count, c.fd, err, fn, line)
+	}
 
 	if err := syscall.Close(c.fd); err != nil {
-		s.OnError(Error{Type: "close", Cause: err})
+		ln.OnError(Error{Type: "close", Cause: err})
 	}
 	if err != nil {
-		s.OnError(Error{Type: typ, Cause: err})
+		ln.OnError(Error{Type: errType, Cause: err})
 	}
 	if c.ssl != nil {
 		c.ssl.Close()
 	}
 }
 
-func (s *Listener) writeConn(c *Conn) int {
+func (ln *Listener) writeConn(c *Conn) int {
 	c.spinLock()
 	if len(c.out) == 0 {
 		c.spinUnlock()
-		s.poll.ModRead(c.fd)
+		ln.poll.ModRead(c.fd)
 		return 1
 	}
 
@@ -331,11 +262,11 @@ func (s *Listener) writeConn(c *Conn) int {
 				c.out = c.out[n:]
 			}
 			c.spinUnlock()
-			s.poll.ModReadWrite(c.fd)
+			ln.poll.ModReadWrite(c.fd)
 			return -n
 		}
 		c.spinUnlock()
-		s.closeConnWithError(c, "write", err)
+		ln.closeConnWithError(c, "write", err)
 		return 1
 	}
 
@@ -344,9 +275,9 @@ func (s *Listener) writeConn(c *Conn) int {
 		c.spinUnlock()
 
 		if c.ws != nil && c.ws.closed {
-			s.closeConnWithError(c, "", nil)
+			ln.closeConnWithError(c, "", nil)
 		} else {
-			s.poll.ModRead(c.fd)
+			ln.poll.ModRead(c.fd)
 		}
 		return 1
 	}
@@ -354,37 +285,37 @@ func (s *Listener) writeConn(c *Conn) int {
 	c.out = c.out[n:]
 	c.spinUnlock()
 
-	s.poll.ModReadWrite(c.fd)
+	ln.poll.ModReadWrite(c.fd)
 	ShortWriteEmitter()
 	return -n
 }
 
-func (s *Listener) readConn(c *Conn) {
+func (ln *Listener) readConn(c *Conn) {
 	var n int
 	var err error
 	if c.ssl != nil {
-		n, err = c.ssl.Read(s.buffer)
+		n, err = c.ssl.Read(ln.buffer)
 	} else {
-		n, err = syscall.Read(c.fd, s.buffer)
+		n, err = syscall.Read(c.fd, ln.buffer)
 	}
 	if n == 0 {
-		s.closeConnWithError(c, "", nil)
+		ln.closeConnWithError(c, "", nil)
 		return
 	}
 	if err != nil {
 		if err == syscall.EAGAIN {
-			s.poll.ModRead(c.fd)
+			ln.poll.ModRead(c.fd)
 			return
 		}
-		s.closeConnWithError(c, "read", err)
+		ln.closeConnWithError(c, "read", err)
 		return
 	}
 
 PARSE_NEXT:
 	c.spinLock()
-	c.in = append(c.in, s.buffer[:n]...)
+	c.in = append(c.in, ln.buffer[:n]...)
 	if len(c.in) > RequestMaxBytes {
-		s.closeConnWithError(c, "oversize", fmt.Errorf("request too large: %db", len(c.in)))
+		ln.closeConnWithError(c, "oversize", fmt.Errorf("request too large: %db", len(c.in)))
 		return
 	}
 	if c.ws != nil {
@@ -403,41 +334,16 @@ PARSE_NEXT:
 	}
 
 	if err != nil {
-		s.closeConnWithError(c, "read", err)
+		ln.closeConnWithError(c, "read", err)
 		return
 	}
 
 	if c.ws != nil {
 		req := c.ws.parsedFrame
 		remain := c.truncateInputBuffer(req.len)
-		switch req.opcode {
-		case 0: // continuation
-			if c.ws.contFrame == nil {
-				s.closeConnWithError(c, "websocket", fmt.Errorf("unexpected continuation frame"))
-				return
-			}
-			c.ws.contFrame = append(c.ws.contFrame, req.data...)
-			if len(c.ws.contFrame) > RequestMaxBytes {
-				s.closeConnWithError(c, "websocket", fmt.Errorf("continuation frame too large"))
-				return
-			}
-			if req.fin {
-				s.OnWSData(c.ws, c.ws.contFrame)
-				c.ws.contFrame = nil
-			}
-		case 8: // close
-			c.ws.closingData = req.data
-			s.closeConnWithError(c, "", nil)
+		if !ln.onWebsocket(req, c) {
+			// Conn already closed
 			return
-		case 9: // ping
-			c.ws.write(10, btos(req.data))
-		case 10: // pong
-		default:
-			if req.fin {
-				s.OnWSData(c.ws, req.data)
-			} else {
-				c.ws.contFrame = append([]byte{}, req.data...)
-			}
 		}
 		if remain > 0 {
 			n = 0
@@ -447,23 +353,23 @@ PARSE_NEXT:
 		req := c.srs.http
 		req.Conn = c
 		c.truncateInputBuffer(int(req.bodyLen) + int(req.hdrLen))
-		if !s.OnHTTP(req) {
-			s.closeConnWithError(c, "", nil)
+		if !ln.OnHTTP(req) {
+			ln.closeConnWithError(c, "", nil)
 			return
 		}
 	} else {
 		req := c.srs.redis
 		req.Conn = c
 		c.truncateInputBuffer(int(req.read))
-		if !s.OnRedis(req) {
-			s.closeConnWithError(c, "", nil)
+		if !ln.OnRedis(req) {
+			ln.closeConnWithError(c, "", nil)
 			return
 		}
 	}
 	c.srs = serverReadState{}
 
 	if len(c.out) != 0 {
-		s.writeConn(c)
+		ln.writeConn(c)
 	}
 }
 

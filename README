@@ -22,3 +22,4 @@ resh does not support pipelining deliberately because it is mainly used as an RP
 OpenSSL and cgo are needed to enable SSL support, and it is not as performant as crypto/tls nor nginx due to the high cost of cgo.
 Use musl to produce a static build, OpenSSL needed to be configured as:
     CC="musl-gcc -static" ./config --prefix=$HOME/musl no-shared no-async no-engine -DOPENSSL_NO_SECURE_MEMORY
+A static build of OpenSSL 1.1.1w on Linux 64bit is included.

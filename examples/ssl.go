@@ -8,9 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
-	"runtime/pprof"
+	"runtime"
 	"sync"
 	"time"
 
@@ -27,14 +26,7 @@ var key []byte
 var role = flag.String("role", "", "")
 
 func main() {
-
 	flag.Parse()
-	p, _ := tls.X509KeyPair(cert, key)
-	config := &tls.Config{Certificates: []tls.Certificate{p}}
-
-	go func() {
-		http.ListenAndServe(":8080", nil)
-	}()
 
 	go func() {
 		time.Sleep(time.Second)
@@ -66,45 +58,38 @@ func main() {
 
 	switch *role {
 	default:
-		if *role != "slave" {
-			out, _ := os.Create("cpuprofile")
-			pprof.StartCPUProfile(out)
-			time.AfterFunc(time.Second*60, func() {
-				pprof.StopCPUProfile()
-				out.Close()
-			})
-		}
-
-		for i := 0; i < 1; i++ {
+		for i := 0; i < runtime.NumCPU(); i++ {
 			ln, err := resh.Listen(true, "127.0.0.1:6000")
 			if err != nil {
 				panic(err)
 			}
-			ln.EnableTLS(config)
+			if err := ln.LoadCertPEMs(cert, key); err != nil {
+				panic(err)
+			}
 			ln.OnError = func(err resh.Error) {
 				fmt.Println(err)
 			}
 			ln.OnHTTP = func(req *resh.HTTP) bool {
 				time.AfterFunc(time.Millisecond*10, func() {
-					buf := req.Body()
-					fmt.Println(string(buf))
-					req.Bytes(200, "text/plain", buf).Flush()
+					req.Bytes(200, "text/plain", req.Body()).Flush()
 				})
 				return true
 			}
 			ln.Timeout = time.Second
 			fmt.Println("serving", ln.Addr(), os.Getpid())
 
-			go func() {
-				for range time.Tick(time.Second) {
-					fmt.Println("pid=", os.Getpid(), "count=", ln.Count(), resh.OK.Load(), resh.BAD.Load())
-				}
-			}()
-
+			// go func() {
+			// 	for range time.Tick(time.Second) {
+			// 		fmt.Println("count=", ln.Count())
+			// 	}
+			// }()
 			go ln.Serve()
 		}
 		select {}
 	case "gotls":
+		p, _ := tls.X509KeyPair(cert, key)
+		config := &tls.Config{Certificates: []tls.Certificate{p}}
+
 		ln, err := tls.Listen("tcp", "127.0.0.1:6000", config)
 		if err != nil {
 			panic(err)

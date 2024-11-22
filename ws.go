@@ -2,6 +2,7 @@ package resh
 
 import (
 	"encoding/binary"
+	"fmt"
 )
 
 type Websocket struct {
@@ -17,6 +18,39 @@ type wsFrame struct {
 	opcode byte
 	fin    bool
 	len    int
+}
+
+func (s *Listener) onWebsocket(req wsFrame, c *Conn) bool {
+	switch req.opcode {
+	case 0: // continuation
+		if c.ws.contFrame == nil {
+			s.closeConnWithError(c, "websocket", fmt.Errorf("unexpected continuation frame"))
+			return false
+		}
+		c.ws.contFrame = append(c.ws.contFrame, req.data...)
+		if len(c.ws.contFrame) > RequestMaxBytes {
+			s.closeConnWithError(c, "websocket", fmt.Errorf("continuation frame too large"))
+			return false
+		}
+		if req.fin {
+			s.OnWSData(c.ws, c.ws.contFrame)
+			c.ws.contFrame = nil
+		}
+	case 8: // close
+		c.ws.closingData = req.data
+		s.closeConnWithError(c, "", nil)
+		return false
+	case 9: // ping
+		c.ws.write(10, btos(req.data))
+	case 10: // pong
+	default:
+		if req.fin {
+			s.OnWSData(c.ws, req.data)
+		} else {
+			c.ws.contFrame = append([]byte{}, req.data...)
+		}
+	}
+	return true
 }
 
 func (ws *Websocket) parse(in []byte) error {
