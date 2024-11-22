@@ -5,6 +5,12 @@ import (
 	"sync/atomic"
 )
 
+const (
+	READ  = 1
+	WRITE = 2
+	EOF   = 4
+)
+
 type lockQueueNode[T any] struct {
 	value T
 	next  *lockQueueNode[T]

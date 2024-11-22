@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,7 @@ func main() {
 	}
 	log.Println("listen on", ln.Addr())
 
-	client, err := redis.NewClient("pwd", ln.Addr().String())
+	client, err := redis.NewClient(10, "pwd", ln.Addr().String())
 	if err != nil {
 		panic(err)
 	}
@@ -33,16 +34,16 @@ func main() {
 		log.Println("error:", err)
 	}
 	client.Timeout = time.Second
-	client.PoolSize = 10
 	// client.OnFdCount = func() {
 	// 	fmt.Println(client.IdleCount())
 	// }
 
 	var succRedis, succHTTP, succWS int64
+	var wsRecv, wsSent atomic.Int64
 	go func() {
 		for range time.Tick(time.Second) {
-			log.Printf("active=%d, client=%v, redis echo=%d, http echo=%d, ws echo=%d\n",
-				ln.Count(), client, succRedis, succHTTP, succWS)
+			log.Printf("active=%d, redis echo=%d, http echo=%d, ws echo=%d\n",
+				ln.Count(), succRedis, succHTTP, succWS)
 		}
 	}()
 
@@ -92,7 +93,9 @@ func main() {
 		return true
 	}
 	ln.OnWSData = func(ws *resh.Websocket, data []byte) {
+		wsRecv.Add(1)
 		time.AfterFunc(time.Millisecond*10, func() {
+			wsSent.Add(1)
 			ws.WriteBinary(data)
 		})
 	}
@@ -112,32 +115,29 @@ func main() {
 			if err != nil {
 				log.Fatalln("ws dial:", err)
 			}
-			exit := make(chan bool, 1)
+			done := make(chan int, 1)
 			m := map[string]*int{}
-			go func() {
-				for {
-					select {
-					case <-exit:
-						return
-					default:
-						_, message, err := c.ReadMessage()
-						if err != nil {
-							return
-						}
-						// fmt.Println("recv", string(message))
-						v, ok := m[string(message)]
-						if !ok {
-							log.Fatalln("ws recv invalid msg")
-						} else {
-							*v = 1
-						}
-					}
-				}
-			}()
 			for i := 0; i < 100; i++ {
 				x := tools.RandData()
 				m[x] = new(int)
 			}
+
+			go func() {
+				for i := 0; i < len(m); i++ {
+					_, message, err := c.ReadMessage()
+					if err != nil {
+						return
+					}
+					// fmt.Println("recv", string(message))
+					v, ok := m[string(message)]
+					if !ok {
+						log.Fatalln("ws recv invalid msg")
+					} else {
+						*v = 1
+					}
+				}
+				done <- 1
+			}()
 			for x := range m {
 				err := c.WriteMessage(websocket.BinaryMessage, []byte(x))
 				if err != nil {
@@ -146,8 +146,12 @@ func main() {
 			}
 			time.Sleep(time.Second)
 			c.WriteMessage(websocket.CloseMessage, []byte("bye"))
+			select {
+			case <-done:
+			case <-time.After(time.Second * 60):
+				log.Fatalln("ws miss")
+			}
 			c.Close()
-			exit <- true
 
 			for _, v := range m {
 				if *v != 1 {
@@ -156,13 +160,17 @@ func main() {
 			}
 			succWS += int64(len(m))
 		}()
-		for i := 0; i < 1000; i++ {
+		N := 1000
+		if runtime.GOOS == "darwin" {
+			N = 10
+		}
+		for i := 0; i < N; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				x := 1 + rand.Intn(10)
 				for i := 0; i < x; i++ {
-					x := tools.RandData()[:10]
+					x := tools.RandData()[:10000]
 
 					var resp *http.Response
 					var err error
@@ -191,29 +199,29 @@ func main() {
 					atomic.AddInt64(&succHTTP, 1)
 				}
 			}()
-			x := 1 + rand.Intn(10)
-			for i := 0; i < x; i++ {
-				x := tools.RandData()
-				off := rand.Intn(4) + 4
-				args := []any{"test", off}
-				for i := 0; i < off; i++ {
-					args = append(args, tools.RandData())
-				}
-				args = append(args, x)
+			// x := 1 + rand.Intn(10)
+			// for i := 0; i < x; i++ {
+			// 	x := tools.RandData()
+			// 	off := rand.Intn(4) + 4
+			// 	args := []any{"test", off}
+			// 	for i := 0; i < off; i++ {
+			// 		args = append(args, tools.RandData())
+			// 	}
+			// 	args = append(args, x)
 
-				wg.Add(1)
-				client.Exec(args, func(d *redis.Reader, err error) {
-					if err != nil {
-						log.Fatalln("exec error:", err)
-					}
-					y := d.Str()
-					if x != y {
-						log.Fatalln("redis mismatch", len(x), len(y))
-					}
-					atomic.AddInt64(&succRedis, 1)
-					wg.Done()
-				})
-			}
+			// 	wg.Add(1)
+			// 	client.Exec(args, func(d *redis.Reader, err error) {
+			// 		if err != nil {
+			// 			log.Fatalln("exec error:", err)
+			// 		}
+			// 		y := d.Str()
+			// 		if x != y {
+			// 			log.Fatalln("redis mismatch", len(x), len(y))
+			// 		}
+			// 		atomic.AddInt64(&succRedis, 1)
+			// 		wg.Done()
+			// 	})
+			// }
 		}
 		wg.Wait()
 	}

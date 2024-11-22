@@ -100,15 +100,17 @@ type Conn struct {
 	next *Conn
 	ts   int64
 
-	ws   *Websocket
-	fd   int
-	srs  serverReadState
-	sa   syscall.Sockaddr
-	poll *internal.Poll
-	ssl  *SSL
+	ws  *Websocket
+	fd  int
+	srs serverReadState
+	sa  syscall.Sockaddr
+	ln  *Listener
+	ssl *SSL
+
+	closed atomic.Int32
 
 	// lock protects the following fields
-	lock atomic.Int64
+	lock atomic.Int32
 	in   []byte
 	out  []byte
 }
@@ -147,7 +149,7 @@ func (c *Conn) _writeString(v string) {
 }
 
 func (c *Conn) Flush() {
-	c.poll.Trigger(c.fd)
+	c.ln.poll.Trigger(c.fd)
 }
 
 func (c *Conn) truncateInputBuffer(sz int) int {
@@ -226,7 +228,7 @@ func (s *Listener) Serve() {
 				return nil
 			}
 
-			c := &Conn{fd: nfd, sa: sa, poll: s.poll}
+			c := &Conn{fd: nfd, sa: sa, ln: s}
 			if s.sslCtx != nil {
 				ssl, err := s.sslCtx.accept(nfd)
 				if err != nil {
@@ -244,15 +246,19 @@ func (s *Listener) Serve() {
 		} else {
 			c, ok := s.fdconns[fd]
 			if !ok {
-				s.OnError(Error{Type: "warning", Cause: fmt.Errorf("warning: fd %d not found", fd)})
+				s.OnError(Error{Type: "lookup", Cause: fmt.Errorf("fd %d not found", fd)})
 				return nil
 			}
 
 			s.attachConn(c.detach())
-			if ev&syscall.EPOLLOUT > 0 {
+			if ev&internal.WRITE > 0 {
 				s.writeConn(c)
-			} else {
+			}
+			if ev&internal.READ > 0 {
 				s.readConn(c)
+			}
+			if ev&internal.EOF > 0 {
+				s.closeConnWithError(c, "eof", nil)
 			}
 		}
 
@@ -280,6 +286,10 @@ func (s *Listener) attachConn(c *Conn) {
 }
 
 func (s *Listener) closeConnWithError(c *Conn, typ string, err error) {
+	if !c.closed.CompareAndSwap(0, 1) {
+		return
+	}
+
 	if c.ws != nil {
 		s.OnWSClose(c.ws, c.ws.closingData)
 	}
@@ -300,12 +310,12 @@ func (s *Listener) closeConnWithError(c *Conn, typ string, err error) {
 	}
 }
 
-func (s *Listener) writeConn(c *Conn) {
+func (s *Listener) writeConn(c *Conn) int {
 	c.spinLock()
 	if len(c.out) == 0 {
 		c.spinUnlock()
 		s.poll.ModRead(c.fd)
-		return
+		return 1
 	}
 
 	var n int
@@ -322,11 +332,11 @@ func (s *Listener) writeConn(c *Conn) {
 			}
 			c.spinUnlock()
 			s.poll.ModReadWrite(c.fd)
-			return
+			return -n
 		}
 		c.spinUnlock()
 		s.closeConnWithError(c, "write", err)
-		return
+		return 1
 	}
 
 	if n == len(c.out) {
@@ -338,13 +348,15 @@ func (s *Listener) writeConn(c *Conn) {
 		} else {
 			s.poll.ModRead(c.fd)
 		}
-	} else {
-		c.out = c.out[n:]
-		c.spinUnlock()
-
-		s.poll.ModReadWrite(c.fd)
-		ShortWriteEmitter()
+		return 1
 	}
+
+	c.out = c.out[n:]
+	c.spinUnlock()
+
+	s.poll.ModReadWrite(c.fd)
+	ShortWriteEmitter()
+	return -n
 }
 
 func (s *Listener) readConn(c *Conn) {

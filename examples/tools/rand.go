@@ -9,12 +9,11 @@ import (
 	"unsafe"
 
 	"github.com/coyove/resh"
-	"github.com/coyove/resh/redis"
 )
 
 func init() {
 	resh.RequestMaxBytes = 10 * 1024 * 1024
-	redis.ResponseMaxBytes = resh.RequestMaxBytes
+	// redis.ResponseMaxBytes = resh.RequestMaxBytes
 
 	rand.Seed(time.Now().Unix())
 	log.SetFlags(log.Lshortfile | log.Ltime)

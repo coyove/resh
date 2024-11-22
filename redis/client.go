@@ -96,7 +96,7 @@ func NewClient(poolSize int, auth, addr string) (*Client, error) {
 			// 	}
 			// }
 
-			if ev&syscall.EPOLLOUT > 0 {
+			if ev&internal.WRITE > 0 {
 				if c.callback == nil {
 					d.closeConnWithError(c, "write", fmt.Errorf("write: fd %d is not active", fd))
 					return nil

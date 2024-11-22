@@ -3,9 +3,9 @@
 package resh
 
 /*
-#cgo !arm64crossamd64 LDFLAGS: -l:libssl.a -l:libcrypto.a -ldl -static-libgcc
-#cgo arm64crossamd64 CFLAGS: -I/usr/openssl-amd64/include
-#cgo arm64crossamd64 LDFLAGS: -l:libssl.a -l:libcrypto.a -ldl -static-libgcc -L/usr/openssl-amd64/lib
+#cgo !darwin LDFLAGS: -l:libssl.a -l:libcrypto.a -ldl -static-libgcc
+#cgo darwin LDFLAGS: -lssl -lcrypto -ldl -L/opt/homebrew/opt/openssl@3/lib
+#cgo darwin CPPFLAGS: -I/opt/homebrew/opt/openssl@3/include
 #include<string.h>
 #include<openssl/bio.h>
 #include<openssl/ssl.h>

@@ -8,14 +8,15 @@
 package internal
 
 import (
+	"fmt"
 	"syscall"
 )
 
 // Poll ...
 type Poll struct {
-	fd      int
-	changes []syscall.Kevent_t
-	notes   noteQueue
+	fd       int
+	changes  []syscall.Kevent_t
+	writeFds lockQueue[int]
 }
 
 // OpenPoll ...
@@ -44,8 +45,8 @@ func (p *Poll) Close() error {
 }
 
 // Trigger ...
-func (p *Poll) Trigger(note interface{}) error {
-	p.notes.Add(note)
+func (p *Poll) Trigger(fd int) error {
+	p.writeFds.Add(fd)
 	_, err := syscall.Kevent(p.fd, []syscall.Kevent_t{{
 		Ident:  0,
 		Filter: syscall.EVFILT_USER,
@@ -55,7 +56,7 @@ func (p *Poll) Trigger(note interface{}) error {
 }
 
 // Wait ...
-func (p *Poll) Wait(iter func(fd int, note interface{}) error) error {
+func (p *Poll) Wait(iter func(fd int, events uint32) error) error {
 	events := make([]syscall.Kevent_t, 128)
 	for {
 		n, err := syscall.Kevent(p.fd, p.changes, events, nil)
@@ -63,16 +64,31 @@ func (p *Poll) Wait(iter func(fd int, note interface{}) error) error {
 			return err
 		}
 		p.changes = p.changes[:0]
-		if err := p.notes.ForEach(func(note interface{}) error {
-			return iter(0, note)
+		if err := p.writeFds.SwapOutForEach(func(fd int) error {
+			return iter(fd, WRITE)
 		}); err != nil {
 			return err
 		}
 		for i := 0; i < n; i++ {
-			if fd := int(events[i].Ident); fd != 0 {
-				if err := iter(fd, nil); err != nil {
-					return err
+			ev := events[i]
+			fd := int(ev.Ident)
+			if fd == 0 {
+				continue
+			}
+			switch ev.Filter {
+			case syscall.EVFILT_WRITE:
+				err = iter(fd, WRITE)
+			case syscall.EVFILT_READ:
+				if ev.Flags&syscall.EV_EOF > 0 {
+					err = iter(fd, READ|EOF)
+				} else {
+					err = iter(fd, READ)
 				}
+			default:
+				fmt.Println(ev)
+			}
+			if err != nil {
+				return err
 			}
 		}
 	}
@@ -91,9 +107,6 @@ func (p *Poll) AddRead(fd int) {
 func (p *Poll) AddReadWrite(fd int) {
 	p.changes = append(p.changes,
 		syscall.Kevent_t{
-			Ident: uint64(fd), Flags: syscall.EV_ADD, Filter: syscall.EVFILT_READ,
-		},
-		syscall.Kevent_t{
 			Ident: uint64(fd), Flags: syscall.EV_ADD, Filter: syscall.EVFILT_WRITE,
 		},
 	)
@@ -101,14 +114,10 @@ func (p *Poll) AddReadWrite(fd int) {
 
 // ModRead ...
 func (p *Poll) ModRead(fd int) {
-	p.changes = append(p.changes, syscall.Kevent_t{
-		Ident: uint64(fd), Flags: syscall.EV_DELETE, Filter: syscall.EVFILT_WRITE,
-	})
+	p.AddRead(fd)
 }
 
 // ModReadWrite ...
 func (p *Poll) ModReadWrite(fd int) {
-	p.changes = append(p.changes, syscall.Kevent_t{
-		Ident: uint64(fd), Flags: syscall.EV_ADD, Filter: syscall.EVFILT_WRITE,
-	})
+	p.AddReadWrite(fd)
 }
