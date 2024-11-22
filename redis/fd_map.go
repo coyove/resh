@@ -42,9 +42,10 @@ func (m *fdMap[T]) Delete(fd int) {
 	fds := *m.fds.Load()
 	if fd < len(fds) {
 		old := fds[fd].Swap(nil)
-		if old != nil {
-			m.count.Add(-1)
+		if old == nil {
+			panic("BUG")
 		}
+		m.count.Add(-1)
 	}
 	m.mu.Unlock()
 }

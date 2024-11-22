@@ -26,8 +26,9 @@ type Client struct {
 	buffer []byte
 	sslCtx *resh.SSLCtx
 
-	fdActive fdMap[Conn]
+	fdConns  fdMap[Conn]
 	fdIdle   chan *Conn
+	poolSize int
 
 	OnFdCount func()
 	OnError   func(resh.Error)
@@ -53,8 +54,9 @@ func NewClient(poolSize int, auth, addr string) (*Client, error) {
 	d.auth = auth
 	d.poll = internal.OpenPoll()
 	d.buffer = make([]byte, 0xFFFF)
+	d.fdConns.fds.Store(new([]atomic.Pointer[Conn]))
 	d.fdIdle = make(chan *Conn, poolSize)
-	d.fdActive.fds.Store(new([]atomic.Pointer[Conn]))
+	d.poolSize = poolSize
 	d.OnFdCount = func() {}
 
 	go func() {
@@ -73,28 +75,18 @@ func NewClient(poolSize int, auth, addr string) (*Client, error) {
 		}()
 
 		d.poll.Wait(func(fd int, ev uint32) error {
-			c := d.fdActive.Get(fd)
+			c := d.fdConns.Get(fd)
 			if c == nil {
 				d.OnError(resh.Error{Type: "warning", Cause: fmt.Errorf("fd %d not found", fd)})
 				return nil
 			}
 
-			// if c.callback != nil {
-			// 	d.attachConn(d.fdActive.head, c.detach())
-			// }
-			// if d.Timeout > 0 {
-			// 	d.fdActive.tail.lock()
-			// 	conn, now := d.fdActive.tail.prev, time.Now().UnixNano()
-			// 	d.fdActive.tail.unlock()
-
-			// 	for ; conn != nil && conn != d.fdActive.head; conn = conn.prev {
-			// 		if conn.ts < now-int64(d.Timeout) {
-			// 			d.closeConnWithError(conn, false, "timeout", fmt.Errorf("connection timed out (fd=%d)", conn.fd))
-			// 		} else {
-			// 			break
-			// 		}
-			// 	}
-			// }
+			if c.callback != nil && d.Timeout > 0 {
+				if !c.death.Reset(d.Timeout) {
+					// Miss the chance to reset, death is inevitable.
+					return nil
+				}
+			}
 
 			if ev&internal.WRITE > 0 {
 				if c.callback == nil {
@@ -119,6 +111,7 @@ type Conn struct {
 	ssl      *resh.SSL
 	in       []byte
 	out      []byte
+	death    *time.Timer
 
 	// 0: no auth (default)                <---------------------------+
 	// 1: need auth, the first response will be treated as AUTH result |
@@ -129,10 +122,10 @@ type Conn struct {
 
 func (d *Client) String() string {
 	return fmt.Sprintf("(host=%v, idle=%d, active=%d, total=%d)",
-		internal.SockaddrToAddr(d.addr), len(d.fdIdle), d.fdActive.Len(), d.fdActive.Len()+len(d.fdIdle))
+		internal.SockaddrToAddr(d.addr), len(d.fdIdle), d.fdConns.Len()-len(d.fdIdle), d.fdConns.Len())
 }
 
-func (s *Client) ActiveCount() int { return s.fdActive.Len() }
+func (s *Client) ActiveCount() int { return s.fdConns.Len() - len(s.fdIdle) }
 
 func (s *Client) IdleCount() int { return len(s.fdIdle) }
 
@@ -168,36 +161,42 @@ func (d *Client) Exec(cmdArgs []any, cb func(*Reader, error)) {
 	})
 }
 
+func (d *Client) fillIdleConn(conn *Conn, cb func(*Reader, error), cc func(*Conn)) {
+	if len(conn.out) > 0 {
+		panic("BUG")
+	}
+
+	conn.callback = cb
+	conn.out = conn.out[:0]
+	cc(conn)
+	if d.Timeout > 0 {
+		conn.death.Reset(d.Timeout)
+	}
+
+	// Free idle connections if there are too many connections.
+	for d.fdConns.Len() > d.poolSize {
+		select {
+		case conn := <-d.fdIdle:
+			d.closeConnWithError(conn, "", nil)
+			continue
+		default:
+		}
+		break
+	}
+
+	d.OnFdCount()
+	d.poll.Trigger(conn.fd)
+}
+
 func (d *Client) activateFreeConn(cb func(*Reader, error), cc func(*Conn)) {
-AGAIN:
 	select {
 	case conn := <-d.fdIdle:
-		if len(conn.out) > 0 {
-			panic("BUG")
-		}
-
-		conn.callback = cb
-		conn.out = conn.out[:0]
-		cc(conn)
-		d.fdActive.Add(conn.fd, conn)
-
-		// Free idle connections if there are too many connections.
-		for d.fdActive.Len()+len(d.fdIdle) > cap(d.fdIdle) {
-			select {
-			case conn := <-d.fdIdle:
-				d.closeConnWithError(conn, "", nil)
-				continue
-			default:
-			}
-			break
-		}
-
-		d.OnFdCount()
-		d.poll.Trigger(conn.fd)
+		d.fillIdleConn(conn, cb, cc)
 		return
 	default:
-		if d.fdActive.Len()+len(d.fdIdle) >= cap(d.fdIdle) {
-			goto AGAIN
+		if d.fdConns.Len() >= d.poolSize {
+			d.fillIdleConn(<-d.fdIdle, cb, cc)
+			return
 		}
 	}
 
@@ -220,6 +219,7 @@ AGAIN:
 		cb(nil, err)
 		return
 	}
+	// fmt.Println("connect", d.fdConns.Len(), d.fdIdle.Len())
 
 	c := &Conn{
 		fd:       fd,
@@ -235,7 +235,12 @@ AGAIN:
 	}
 	cc(c)
 
-	d.fdActive.Add(fd, c)
+	d.fdConns.Add(fd, c)
+	if d.Timeout > 0 {
+		c.death = time.AfterFunc(d.Timeout, func() {
+			d.closeConnWithError(c, "timeout", fmt.Errorf("connection timed out (fd=%d)", c.fd))
+		})
+	}
 	d.OnFdCount()
 	d.poll.AddReadWrite(fd)
 }
@@ -244,12 +249,7 @@ func (d *Client) closeConnWithError(c *Conn, typ string, err error) {
 	// _, _, line, _ := runtime.Caller(1)
 	// fmt.Println("close", c.fd, err, line)
 
-	if c.callback == nil {
-		// Idle connections
-	} else {
-		d.fdActive.Delete(c.fd)
-	}
-
+	d.fdConns.Delete(c.fd)
 	d.OnFdCount()
 
 	if err := syscall.Close(c.fd); err != nil {
@@ -359,14 +359,15 @@ func (d *Client) readConn(c *Conn) {
 	}
 
 	if len(c.in) == 0 && c.authState == 0 {
-		if d.fdActive.Len()+len(d.fdIdle) <= cap(d.fdIdle) {
+		if d.fdConns.Len() <= d.poolSize {
 			c.callback = nil
-			d.fdActive.Delete(c.fd)
-			select {
-			case d.fdIdle <- c:
-			default:
-				d.closeConnWithError(c, "free", nil)
+			if c.death != nil {
+				if !c.death.Stop() {
+					// Already fired and closed
+					return
+				}
 			}
+			d.fdIdle <- c
 		} else {
 			d.closeConnWithError(c, "free", nil)
 		}
@@ -377,7 +378,7 @@ func (d *Client) Close() {
 	if d.sslCtx != nil {
 		// 	d.sslCtx.close()
 	}
-	d.fdActive.Foreach(func(fd int, c *Conn) {
+	d.fdConns.Foreach(func(fd int, c *Conn) {
 		d.closeConnWithError(c, "", nil)
 	})
 	d.poll.Close()
