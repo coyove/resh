@@ -234,7 +234,11 @@ func (ln *Listener) closeConnWithError(c *Conn, errType string, err error) {
 		ln.OnError(Error{Type: "close", Cause: err})
 	}
 	if err != nil {
-		ln.OnError(Error{Type: errType, Cause: err})
+		if e, ok := err.(Error); ok {
+			ln.OnError(e)
+		} else {
+			ln.OnError(Error{Type: errType, Cause: err})
+		}
 	}
 	if c.ssl != nil {
 		c.ssl.Close()

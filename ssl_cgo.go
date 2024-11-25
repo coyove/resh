@@ -30,7 +30,7 @@ char* X_get_last_error() {
     return copy;
 }
 
-const char *default_alpn = "http/1.1";
+const unsigned char *default_alpn = "http/1.1";
 
 int X_set_alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen, const unsigned char *in, unsigned int inlen, void *arg) {
     *out = default_alpn;
@@ -135,7 +135,9 @@ void X_SSL_CTX_free(SSL_CTX *ctx) {
 */
 import "C"
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"syscall"
@@ -211,10 +213,10 @@ func (s *SSL) Read(p []byte) (int, error) {
 		case 1:
 			s.handshaked = true
 		case -C.X_SSL_ERROR_WANT_WRITE:
-			return -1, fmt.Errorf("failed to handshake, TODO: retry write")
+			return -1, Error{Type: "sslhandshake", Cause: io.ErrShortWrite}
 		case -C.X_SSL_ERROR_WANT_READ:
 		default:
-			return -1, fmt.Errorf("failed to handshake: %v", sslGetErrorMaybeErrno(int(res)))
+			return -1, Error{Type: "sslhandshake", Cause: errors.New(sslGetErrorMaybeErrno(int(res)))}
 		}
 		return -1, syscall.EAGAIN
 	}
@@ -228,21 +230,21 @@ func (s *SSL) Read(p []byte) (int, error) {
 	if rd == -C.X_SSL_ERROR_WANT_READ {
 		return -1, syscall.EAGAIN
 	}
-	return -1, fmt.Errorf("failed to read: %v", sslGetErrorMaybeErrno(int(rd)))
+	return -1, Error{Type: "sslread", Cause: errors.New(sslGetErrorMaybeErrno(int(rd)))}
 }
 
 func (s *SSL) Write(p []byte) (int, error) {
 	if !s.handshaked {
-		return -1, fmt.Errorf("write before handshaking")
+		return -1, Error{Type: "sslhandshake", Cause: errors.New("not finished")}
 	}
-	rd := C.X_write(s.ssl, unsafe.Pointer(&p[0]), C.ulong(len(p)))
-	if rd > 0 {
-		return int(rd), nil
+	wr := C.X_write(s.ssl, unsafe.Pointer(&p[0]), C.ulong(len(p)))
+	if wr > 0 {
+		return int(wr), nil
 	}
-	if rd == -C.X_SSL_ERROR_WANT_WRITE {
-		return int(rd), syscall.EAGAIN
+	if wr == -C.X_SSL_ERROR_WANT_WRITE {
+		return int(wr), syscall.EAGAIN
 	}
-	return -1, fmt.Errorf("failed to write: %v", sslGetErrorMaybeErrno(int(rd)))
+	return -1, Error{Type: "sslwrite", Cause: errors.New(sslGetErrorMaybeErrno(int(wr)))}
 }
 
 func (s *SSL) Close() {
